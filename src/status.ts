@@ -86,7 +86,7 @@ export function formatGridAlert(
   return [
     `🔋 Перешли на аккумуляторы · ${time}`,
     ...(details.length ? [details.join(" · ")] : []),
-    ...(batteryRuntime ? [`⏳ При текущем разряде — ${batteryRuntime}`] : []),
+    batteryRuntime ? `⏳ При текущем разряде — ${batteryRuntime}` : "⏳ Время работы пока неизвестно.",
   ].join("\n");
 }
 

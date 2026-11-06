@@ -1,3 +1,4 @@
+import { updateMonitorNotifications } from "./monitor-notifications";
 import { listDevices, loadConfig } from "./owner";
 import { estimateBatteryRuntime, getBatterySettings } from "./battery";
 import { DeyeClient } from "./deye";
@@ -72,10 +73,10 @@ async function monitorDevice(db: GridDatabase, env: Env, config: DeyeConfig, nam
   try {
     const client = new DeyeClient(config);
     const settings = await getBatterySettings(db, client, config.deviceSn);
-    const { station, device } = await client.getTelemetry();
+    const { station, device } = await client.getTelemetry().catch(() => ({ station: undefined, device: undefined }));
     const { state, measuredAt } = readGridTransition(device);
+    const runtime = state === "absent" ? estimateBatteryRuntime(settings, device, station, measuredAt) : undefined;
     if (state) {
-      const runtime = state === "absent" ? estimateBatteryRuntime(settings, device, station, measuredAt) : undefined;
       const alert = formatGridAlert(state, measuredAt, station, runtime);
       const message = name ? name + "\n" + alert : alert;
 
@@ -98,6 +99,7 @@ async function monitorDevice(db: GridDatabase, env: Env, config: DeyeConfig, nam
         `).bind(config.deviceSn, measuredAt, state),
       ]);
     }
+    await updateMonitorNotifications(db, client, config.deviceSn, name, device, station, settings?.shutdown_soc, runtime);
   } finally {
     // Pending alerts can be delivered even while Deye Cloud is unavailable.
     await deliverAlerts(db, env, config.deviceSn);

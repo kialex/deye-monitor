@@ -53,11 +53,11 @@ const ownerSections = {
   },
   devices: {
     title: "Инверторы",
-    actions: [["📋 Список станций", "/stations"], ["➕ Добавить инвертор", "/add"], ["↩️ Администрирование", "/manage"]],
+    actions: [["📋 Список станций", "/stations"], ["➕ Добавить инвертор", "/add"], ["↩️ Администрирование", "/manage"], ["↩️ Главное меню", "/admin"]],
   },
   alerts: {
     title: "Оповещения",
-    actions: [["📨 Заявки", "/requests"], ["👥 Все подписки", "/recipients"], ["↩️ Администрирование", "/manage"]],
+    actions: [["📨 Заявки", "/requests"], ["👥 Все подписки", "/recipients"], ["↩️ Администрирование", "/manage"], ["↩️ Главное меню", "/admin"]],
   },
 };
 
@@ -69,8 +69,12 @@ const ownerActions = new Map<string, string>(
 );
 
 function ownerKeyboard(actions: string[][]) {
+  const rows = actions.map(([text]) => [{ text }]);
+  if (actions.at(-2)?.[0] === "↩️ Администрирование") {
+    rows.push(rows.splice(-2).flat());
+  }
   return {
-    keyboard: actions.map(([text]) => [{ text }]),
+    keyboard: rows,
     resize_keyboard: true,
     is_persistent: true,
   };
@@ -221,10 +225,10 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
       const { results } = await env.GRID_DB.prepare(
         "SELECT chat_id, title FROM chat_requests WHERE state = 'pending' ORDER BY update_id DESC LIMIT 20",
       ).all<{ chat_id: string; title: string }>();
-      if (!results.length) await client.sendStatusMessage("Открытых заявок нет.", { inline_keyboard: [[{ text: "‹ Оповещения", callback_data: "menu:alerts" }]] });
+      if (!results.length) await client.sendStatusMessage("Открытых заявок нет.", false);
       for (const pending of results) {
         await client.sendStatusMessage("🔔 " + pending.title + " · " + pending.chat_id, {
-          inline_keyboard: [...await requestButtons(env, pending.chat_id), [{ text: "‹ Оповещения", callback_data: "menu:alerts" }]],
+          inline_keyboard: await requestButtons(env, pending.chat_id),
         });
       }
       return new Response(null, { status: 204 });
@@ -259,9 +263,7 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
       ? await adminReply(command, args, chatId, ownerId, env, new URL(request.url).origin, adminButtons)
       : undefined;
     if (adminText) {
-      await client.sendStatusMessage(adminText, owner && privateChat ? { inline_keyboard: [...adminButtons, [command === "/recipients" || command === "/bind" || command === "/unbind"
-        ? { text: "‹ Оповещения", callback_data: "menu:alerts" }
-        : { text: "‹ Инверторы", callback_data: "menu:devices" }]] } : false);
+      await client.sendStatusMessage(adminText, adminButtons.length ? { inline_keyboard: adminButtons } : false);
       return new Response(null, { status: 204 });
     }
 

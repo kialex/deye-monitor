@@ -15,6 +15,15 @@ export interface Device {
   dataList?: { key: string; unit: string; value: string | number }[];
 }
 
+export interface DeyeFault {
+  alertId: string;
+  alertCode: number;
+  alertName?: string;
+  description?: string;
+  alertStartTime: number;
+  alertEndTime?: number;
+}
+
 export interface DeyeStationDevices {
   id: number;
   name: string;
@@ -69,6 +78,21 @@ export class DeyeClient {
       stations.push(...entries);
       if (entries.length < size || (result.total !== undefined && stations.length >= result.total)) return stations;
       if (page === 50) throw new Error("Deye station list too large");
+    }
+  }
+
+  async getFaults(startTimestamp: number, endTimestamp: number): Promise<DeyeFault[]> {
+    const token = await this.getAccessToken();
+    const faults: DeyeFault[] = [];
+    const size = 100;
+    for (let page = 1; ; page++) {
+      const result = await this.request<{ alertList?: DeyeFault[]; total?: number }>(
+        "/device/alertList", { deviceSn: this.config.deviceSn, startTimestamp, endTimestamp, page, size }, token,
+      );
+      const entries = result.alertList ?? [];
+      faults.push(...entries);
+      if (entries.length < size || (result.total !== undefined && faults.length >= result.total)) return faults;
+      if (page === 20) throw new Error("Deye fault list too large");
     }
   }
 
