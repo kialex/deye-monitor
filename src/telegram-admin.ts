@@ -9,11 +9,11 @@ export async function adminReply(
   if (command === "/admin") return [
     "⚙️ Управление Deye",
     "/add — подключить аккаунт или обновить реквизиты инвертора (в личке)",
+    "/requests — заявки от групп (в личке)",
+    "/approve <ID чата> <серийный номер> — одобрить заявку вручную (в личке)",
     "/stations — список инверторов и подписок (в личке)",
     "/bind <серийный номер> — включить оповещения в текущем чате",
     "/unbind <серийный номер> — отключить оповещения в текущем чате",
-    "/allow <серийный номер> <ID пользователя> — доступ к /status в личке",
-    "/revoke <серийный номер> <ID пользователя> — отозвать доступ",
   ].join("\n");
 
   if (command === "/add") {
@@ -36,27 +36,17 @@ export async function adminReply(
     }).join("\n\n").slice(0, 3900) || "Подключи первый инвертор через /add.";
   }
 
-  if (!["/bind", "/unbind", "/allow", "/revoke"].includes(command)) return undefined;
-  const [serial, userId] = args;
+  if (!["/bind", "/unbind"].includes(command)) return undefined;
+  const [serial] = args;
   if (!serial || !/^[\w-]{1,100}$/.test(serial)) return `${command} <серийный номер из /stations>`;
   const device = await db.prepare("SELECT device_sn FROM monitored_devices WHERE device_sn = ?1").bind(serial).first();
   if (!device && serial !== env.DEYE_DEVICE_SN) return "Инвертор не зарегистрирован. Проверь /stations.";
 
-  if (command === "/bind" || command === "/unbind") {
-    const enabled = command === "/bind" ? 1 : 0;
-    await db.prepare(`
-      INSERT INTO chat_subscriptions (device_sn, chat_id, enabled) VALUES (?1, ?2, ?3)
-      ON CONFLICT(device_sn, chat_id) DO UPDATE SET enabled = excluded.enabled
-      RETURNING device_sn
-    `).bind(serial, chatId, enabled).first();
-    return enabled ? "Оповещения для этого инвертора включены в чате." : "Оповещения для этого инвертора отключены в чате.";
-  }
-
-  if (chatId !== ownerId) return "Эта команда доступна в личном чате с ботом.";
-  if (!/^\d{1,16}$/.test(userId ?? "")) return `${command} <серийный номер> <Telegram User ID>`;
-  const sql = command === "/allow"
-    ? "INSERT OR IGNORE INTO device_access (device_sn, user_id) VALUES (?1, ?2) RETURNING user_id"
-    : "DELETE FROM device_access WHERE device_sn = ?1 AND user_id = ?2 RETURNING user_id";
-  await db.prepare(sql).bind(serial, userId).first();
-  return command === "/allow" ? "Доступ к показаниям выдан." : "Доступ к показаниям отозван.";
+  const enabled = command === "/bind" ? 1 : 0;
+  await db.prepare(`
+    INSERT INTO chat_subscriptions (device_sn, chat_id, enabled) VALUES (?1, ?2, ?3)
+    ON CONFLICT(device_sn, chat_id) DO UPDATE SET enabled = excluded.enabled
+    RETURNING device_sn
+  `).bind(serial, chatId, enabled).first();
+  return enabled ? "Оповещения для этого инвертора включены в чате." : "Оповещения для этого инвертора отключены в чате.";
 }

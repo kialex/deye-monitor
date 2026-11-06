@@ -28,7 +28,7 @@ async function registerWebhook() {
       body: JSON.stringify({
         url: url.href,
         secret_token: webhookSecret,
-        allowed_updates: ["message"],
+        allowed_updates: ["message", "my_chat_member", "callback_query"],
       }),
       signal: AbortSignal.timeout(10_000),
     });
