@@ -4,7 +4,7 @@ import { readDeyeConfig, type Env } from "./env";
 import { post } from "./http";
 import { formatStatus } from "./status";
 
-class TelegramClient {
+export class TelegramClient {
   constructor(private readonly token: string, private readonly chatId: string) {}
 
   async sendStatusMessage(text: string): Promise<void> {

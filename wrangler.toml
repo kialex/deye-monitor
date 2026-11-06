@@ -16,3 +16,11 @@ persist = true
 enabled = false
 head_sampling_rate = 1
 persist = true
+
+[triggers]
+crons = ["* * * * *"]
+
+[[d1_databases]]
+binding = "GRID_DB"
+database_name = "deye-monitor"
+database_id = "bd05012f-40bf-4c40-8420-726ceb37530c"

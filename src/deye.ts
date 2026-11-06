@@ -4,6 +4,7 @@ import { post } from "./http";
 
 export interface Station {
   batterySOC?: number;
+  dischargePower?: number;
   generationPower?: number;
   consumptionPower?: number;
   lastUpdateTime?: number | string;
@@ -23,7 +24,7 @@ async function deye<T>(path: string, body: object, token?: string): Promise<T> {
 export class DeyeClient {
   constructor(private readonly config: DeyeConfig) {}
 
-  async getTelemetry() {
+  private async getAccessToken() {
     const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(this.config.password));
     const password = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
     const { accessToken } = await deye<{ accessToken?: string }>(
@@ -33,12 +34,31 @@ export class DeyeClient {
     const token = accessToken?.replace(/^Bearer\s+/i, "").trim();
     if (!token) throw new Error("Deye Cloud did not return an access token");
 
+    return token;
+  }
+
+  async getDeviceTelemetry(token?: string): Promise<Device | undefined> {
+    const result = await deye<{ deviceDataList?: Device[] }>(
+      "/device/latest", { deviceList: [this.config.deviceSn] }, token ?? await this.getAccessToken(),
+    );
+    return result.deviceDataList?.[0];
+  }
+
+  async getBatterySettings() {
+    const token = await this.getAccessToken();
+    return deye<{ battCapacity: number; battLowCapacity: number; battShutDownCapacity: number }>(
+      "/config/battery", { deviceSn: this.config.deviceSn }, token,
+    );
+  }
+
+  async getTelemetry() {
+    const token = await this.getAccessToken();
     const [stationResult, deviceResult] = await Promise.allSettled([
       deye<Station>("/station/latest", { stationId: this.config.stationId }, token),
-      deye<{ deviceDataList?: Device[] }>("/device/latest", { deviceList: [this.config.deviceSn] }, token),
+      this.getDeviceTelemetry(token),
     ]);
     const station = stationResult.status === "fulfilled" ? stationResult.value : undefined;
-    const device = deviceResult.status === "fulfilled" ? deviceResult.value.deviceDataList?.[0] : undefined;
+    const device = deviceResult.status === "fulfilled" ? deviceResult.value : undefined;
     if (!station && !device) throw new Error("Deye Cloud telemetry unavailable");
     return { station, device };
   }

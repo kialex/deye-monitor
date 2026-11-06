@@ -1,4 +1,7 @@
+import type { GridDatabase } from "./grid-monitor";
+
 export interface Env {
+  GRID_DB?: GridDatabase;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_CHAT_ID: string;
   TELEGRAM_WEBHOOK_SECRET: string;
