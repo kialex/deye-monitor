@@ -7,30 +7,21 @@ export async function adminReply(
 ): Promise<string | undefined> {
   const db = env.GRID_DB;
   if (!db) return "База данных недоступна.";
-  if (command === "/admin") return [
-    "⚙️ Управление Deye",
-    "/add — подключить аккаунт или обновить реквизиты инвертора (в личке)",
-    "/requests — заявки от групп (в личке)",
-    "/approve <ID чата> <серийный номер> — одобрить заявку вручную (в личке)",
-    "/stations — список инверторов (в личке)",
-    "/recipients — подписки по инверторам (в личке)",
-    "/bind <серийный номер> — включить оповещения в текущем чате",
-    "/unbind <серийный номер> — отключить оповещения в текущем чате",
-  ].join("\n");
+  if (command === "/admin") return "Открой личный чат с ботом и нажми Start.";
 
   if (command === "/add") {
-    if (chatId !== ownerId) return "Отправь /add в личном чате с ботом.";
+    if (chatId !== ownerId) return "Открой «Добавить инвертор» в личном чате с ботом.";
     return "Открой одноразовую ссылку для подключения Deye (10 минут).\n" + await makeSetupLink(env, origin);
   }
 
   if (command === "/stations" || command === "/recipients") {
-    if (chatId !== ownerId) return `Отправь ${command} в личном чате с ботом.`;
+    if (chatId !== ownerId) return "Открой этот раздел в личном чате с ботом.";
     const devices = await listDevices(db);
     const legacy = legacyDevice(env);
     const entries = legacy && !devices.some(row => row.device_sn === legacy.device_sn) ? [legacy, ...devices] : devices;
     if (command === "/stations") {
       return entries.map(device => device.name + " · " + device.device_sn)
-        .join("\n").slice(0, 3900) || "Подключи первый инвертор через /add.";
+        .join("\n").slice(0, 3900) || "Нажми «Добавить инвертор», чтобы подключить первый инвертор.";
     }
 
     const { results: subscriptions } = await db.prepare(`
@@ -51,19 +42,19 @@ export async function adminReply(
       for (const chat of chats) {
         const data = `${chat.enabled ? "detach" : "restore"}:${chat.id}:${device.device_sn}`;
         if (chat.available && new TextEncoder().encode(data).length <= 64 && buttons.length < 30) {
-          buttons.push([{ text: `${chat.enabled ? "🔕 Отключить" : "🔔 Восстановить"} · ${chat.name} · ${device.name}`.slice(0, 64), callback_data: data }]);
+          buttons.push([{ text: `${chat.enabled ? "Отключить" : "Восстановить"} · ${chat.name} · ${device.name}`.slice(0, 64), callback_data: data }]);
         }
       }
       return [device.name + " · " + device.device_sn, ...chats.map(chat => "• " + chat.name + (chat.enabled ? "" : " · отключена")),
         ...(chats.length ? [] : ["Подписок нет"])].join("\n");
-    }).join("\n\n").slice(0, 3900) || "Подключи первый инвертор через /add.";
+    }).join("\n\n").slice(0, 3900) || "Нажми «Добавить инвертор», чтобы подключить первый инвертор.";
   }
 
   if (!["/bind", "/unbind"].includes(command)) return undefined;
   const [serial] = args;
-  if (!serial || !/^[\w-]{1,100}$/.test(serial)) return `${command} <серийный номер из /stations>`;
+  if (!serial || !/^[\w-]{1,100}$/.test(serial)) return "Выбери инвертор в разделе подписок.";
   const device = await db.prepare("SELECT device_sn FROM monitored_devices WHERE device_sn = ?1").bind(serial).first();
-  if (!device && serial !== env.DEYE_DEVICE_SN) return "Инвертор не зарегистрирован. Проверь /stations.";
+  if (!device && serial !== env.DEYE_DEVICE_SN) return "Инвертор не зарегистрирован. Открой список станций.";
 
   const enabled = command === "/bind" ? 1 : 0;
   await db.prepare(`

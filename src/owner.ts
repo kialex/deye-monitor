@@ -107,11 +107,11 @@ export async function handleSetup(request: Request, env: Env): Promise<Response>
     const form = await request.formData();
     const field = (name: string) => String(form.get(name) ?? "");
     const token = field("token");
-    if (!/^[a-f0-9-]{72}$/.test(token)) return page("Открой новую ссылку через /add в Telegram.", 403);
+    if (!/^[a-f0-9-]{72}$/.test(token)) return page("Открой новую ссылку кнопкой «Добавить инвертор» в Telegram.", 403);
     const tokenHash = await hash(token);
     const setup = await db.prepare("SELECT credentials, choices FROM admin_setup WHERE token_hash = ?1 AND expires_at > ?2")
       .bind(tokenHash, Date.now()).first<{ credentials: string | null; choices: string | null }>();
-    if (!setup) return page("Ссылка истекла. Запроси новую через /add.", 403);
+    if (!setup) return page("Ссылка истекла. Запроси новую кнопкой «Добавить инвертор».", 403);
 
     if (field("device")) {
       const choices = JSON.parse(setup.choices ?? "[]") as Choice[];
@@ -131,8 +131,8 @@ export async function handleSetup(request: Request, env: Env): Promise<Response>
         db.prepare("DELETE FROM admin_setup WHERE token_hash = ?1 AND credentials = ?2")
           .bind(tokenHash, setup.credentials),
       ]);
-      if (!saved.results.length) return page("Ссылка больше не действует. Запроси новую через /add.", 403);
-      return page(`Инвертор подключён. Вернись в Telegram и открой /stations.`);
+      if (!saved.results.length) return page("Ссылка больше не действует. Запроси новую кнопкой «Добавить инвертор».", 403);
+      return page(`Инвертор подключён. Вернись в Telegram и открой список станций.`);
     }
 
     const config: DeyeConfig = {
@@ -142,7 +142,7 @@ export async function handleSetup(request: Request, env: Env): Promise<Response>
     };
     if (!config.appId || !config.appSecret || !config.email || !config.password ||
         Object.values(config).some(value => typeof value === "string" && value.length > 300)) {
-      return page("Заполни все поля. Для новой ссылки отправь /add.", 400);
+      return page("Заполни все поля. Для новой ссылки нажми «Добавить инвертор».", 400);
     }
     const stations = await new DeyeClient(config).listStationsWithDevices();
     const choices = stations.flatMap(station => (station.deviceListItems ?? [])
@@ -157,7 +157,7 @@ export async function handleSetup(request: Request, env: Env): Promise<Response>
       <p><label>Название объекта <input name="name" maxlength="120"></label></p>
       <button>Подключить</button></form>`);
   } catch {
-    return page("Не удалось завершить подключение. Проверь реквизиты Deye и запроси новую ссылку через /add.", 400);
+    return page("Не удалось завершить подключение. Проверь реквизиты Deye и запроси новую ссылку кнопкой «Добавить инвертор».", 400);
   }
 }
 

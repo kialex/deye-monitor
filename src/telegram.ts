@@ -10,20 +10,19 @@ import { formatStatus } from "./status";
 export class TelegramClient {
   constructor(private readonly token: string, private readonly chatId: string) {}
 
-  async configureOwnerMenu(): Promise<void> {
+  async clearOwnerCommandMenu(): Promise<void> {
     const api = `${TELEGRAM_API}/bot${this.token}`;
-    const commands = await post<{ ok: boolean }>(api + "/setMyCommands", {
+    const commands = await post<{ ok: boolean }>(api + "/deleteMyCommands", {
       scope: { type: "chat", chat_id: this.chatId },
-      commands: [{ command: "admin", description: "Открыть управление Deye" }],
     });
     const button = await post<{ ok: boolean }>(api + "/setChatMenuButton", {
       chat_id: this.chatId,
-      menu_button: { type: "commands" },
+      menu_button: { type: "default" },
     });
     if (!commands.ok || !button.ok) throw new Error("Telegram rejected owner menu configuration");
   }
 
-  async sendStatusMessage(text: string, keyboard: boolean | { remove_keyboard: true } | { inline_keyboard: { text: string; callback_data: string }[][] } = true): Promise<void> {
+  async sendStatusMessage(text: string, keyboard: boolean | typeof ownerMenu | { remove_keyboard: true } | { inline_keyboard: { text: string; callback_data: string }[][] } = true): Promise<void> {
     const result = await post<{ ok: boolean }>(
       `${TELEGRAM_API}/bot${this.token}/sendMessage`,
       {
@@ -41,11 +40,17 @@ export class TelegramClient {
   }
 }
 
-const ownerMenu = { inline_keyboard: [
-  [{ text: STATUS_BUTTON, callback_data: "menu:status" }],
-  [{ text: "👤 Мои подписки", callback_data: "menu:subscriptions" }],
-  [{ text: "⚙️ Администрирование", callback_data: "menu:manage" }],
-] };
+const ownerActions = new Map([
+  ["Состояние", "/status"],
+  ["Мои подписки", "/subscriptions"],
+  ["Администрирование", "/manage"],
+]);
+
+const ownerMenu = {
+  keyboard: [...ownerActions.keys()].map(text => [{ text }]),
+  resize_keyboard: true,
+  is_persistent: true,
+};
 
 const backToMenu = [{ text: "‹ Главное меню", callback_data: "menu:admin" }];
 
@@ -53,22 +58,22 @@ const backToManagement = [{ text: "‹ Администрирование", call
 
 const ownerSections = {
   manage: {
-    title: "⚙️ Администрирование",
+    title: "Администрирование",
     inline_keyboard: [
-  [{ text: "📋 Инверторы", callback_data: "menu:devices" }, { text: "🔔 Оповещения", callback_data: "menu:alerts" }],
+  [{ text: "Инверторы", callback_data: "menu:devices" }, { text: "Оповещения", callback_data: "menu:alerts" }],
       backToMenu,
     ],
   },
   devices: {
-    title: "📋 Инверторы",
+    title: "Инверторы",
     inline_keyboard: [
       [{ text: "Список станций", callback_data: "menu:stations" }],
-      [{ text: "➕ Добавить инвертор", callback_data: "menu:add" }],
+      [{ text: "Добавить инвертор", callback_data: "menu:add" }],
       backToManagement,
     ],
   },
   alerts: {
-    title: "🔔 Оповещения",
+    title: "Оповещения",
     inline_keyboard: [
       [{ text: "Заявки", callback_data: "menu:requests" }],
       [{ text: "Все подписки", callback_data: "menu:recipients" }],
@@ -183,7 +188,8 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
   const owner = !!ownerId && userId === ownerId && !message.from?.is_bot;
   const privateChat = message.chat.type === "private" && chatId === userId;
   const [rawCommand, ...args] = message.text.trim().split(/\s+/);
-  const command = rawCommand.split("@")[0];
+  const command = (owner && privateChat ? ownerActions.get(message.text.trim()) : undefined)
+    ?? rawCommand.split("@")[0];
   const client = new TelegramClient(env.TELEGRAM_BOT_TOKEN, chatId);
 
   try {
@@ -204,7 +210,6 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
       } catch {
         console.warn("Telegram owner menu configuration failed");
       }
-      if (updateId !== undefined) await client.sendStatusMessage("Управление Deye", { remove_keyboard: true });
       await client.sendStatusMessage("Выбери действие.", ownerMenu);
       return new Response(null, { status: 204 });
     }
@@ -246,13 +251,13 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
           : row.device_sn === env.DEYE_DEVICE_SN && chatId === env.TELEGRAM_CHAT_ID;
         const data = "menu:" + (enabled ? "unbind:" : "bind:") + row.device_sn;
         return new TextEncoder().encode(data).length <= 64
-          ? [[{ text: ((enabled ? "🔕 Отключить · " : "🔔 Включить · ") + row.name).slice(0, 64), callback_data: data }]] : [];
+          ? [[{ text: ((enabled ? "Отключить · " : "Включить · ") + row.name).slice(0, 64), callback_data: data }]] : [];
       });
       await client.sendStatusMessage("Мои подписки", { inline_keyboard: [...buttons, backToMenu] });
       return new Response(null, { status: 204 });
     }
 
-    const adminButtons: typeof ownerMenu.inline_keyboard = [];
+    const adminButtons: { text: string; callback_data: string }[][] = [];
     const adminText = owner && (privateChat || ["/admin", "/bind", "/unbind"].includes(command))
       ? await adminReply(command, args, chatId, ownerId, env, new URL(request.url).origin, adminButtons)
       : undefined;
@@ -283,7 +288,7 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
       ? [legacy, ...devices] : devices;
     if (!choices.length) return new Response(null, { status: 204 });
 
-    let text = "Выбери объект:\n" + choices.map(row => row.name + " · /status " + row.device_sn).join("\n");
+    let text = "Выбери станцию.";
     const selected = args.length ? choices.find(row => row.device_sn === args[0])
       : choices.length === 1 ? choices[0] : undefined;
     if (requested && selected) {
