@@ -4,14 +4,14 @@ import type { Env } from "./env";
 import { legacyDevice, listDevices } from "./owner";
 
 export interface ChatMembership {
-  chat: { id: number; title?: string; type: string };
+  chat: { id: number; title?: string; type: string; first_name?: string; last_name?: string };
   old_chat_member: { status: string; is_member?: boolean };
   new_chat_member: { status: string; is_member?: boolean };
 }
 
 export async function recordMembership(env: Env, change: ChatMembership, updateId: number) {
   const db = env.GRID_DB;
-  if (!db || !["group", "supergroup", "channel"].includes(change.chat.type)) return null;
+  if (!db || !["private", "group", "supergroup", "channel"].includes(change.chat.type)) return null;
   const active = (member: ChatMembership["new_chat_member"]) =>
     ["member", "administrator", "creator"].includes(member.status) ||
     (member.status === "restricted" && member.is_member === true);
@@ -19,6 +19,8 @@ export async function recordMembership(env: Env, change: ChatMembership, updateI
   if (joined === active(change.old_chat_member)) return null;
 
   const chatId = String(change.chat.id);
+  const name = [change.chat.first_name, change.chat.last_name].filter(Boolean).join(" ");
+  const title = change.chat.type === "private" ? "Личный чат · " + (name || chatId) : change.chat.title || chatId;
   await db.batch([
     db.prepare(`
       INSERT INTO chat_requests (chat_id, title, update_id, state)
@@ -26,7 +28,7 @@ export async function recordMembership(env: Env, change: ChatMembership, updateI
       ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title, update_id = excluded.update_id,
         state = excluded.state, notified_at = NULL
       WHERE excluded.update_id > chat_requests.update_id
-    `).bind(chatId, change.chat.title || chatId, updateId, joined ? "pending" : "removed"),
+    `).bind(chatId, title, updateId, joined ? "pending" : "removed"),
     db.prepare(`
       UPDATE chat_subscriptions SET enabled = 0 WHERE chat_id = ?1
       AND EXISTS (SELECT 1 FROM chat_requests WHERE chat_id = ?1 AND update_id = ?2 AND state = 'removed')

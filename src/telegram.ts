@@ -1,5 +1,5 @@
 import { recordMembership, recordPrivateRequest, requestButtons, resolveRequest, type ChatMembership } from "./chat-requests";
-import { adminReply, detachSubscription } from "./telegram-admin";
+import { adminReply, changeSubscription } from "./telegram-admin";
 import { legacyDevice, listDevices, loadConfig } from "./owner";
 import { STATUS_BUTTON, TELEGRAM_API } from "./constants";
 import { DeyeClient } from "./deye";
@@ -31,7 +31,7 @@ export class TelegramClient {
 const ownerMenu = { inline_keyboard: [
   [{ text: STATUS_BUTTON, callback_data: "menu:status" }, { text: "➕ Добавить инвертор", callback_data: "menu:add" }],
   [{ text: "🔔 Заявки", callback_data: "menu:requests" }, { text: "📋 Станции", callback_data: "menu:stations" }],
-  [{ text: "👤 Мои подписки", callback_data: "menu:subscriptions" }],
+  [{ text: "👥 Подписки", callback_data: "menu:recipients" }, { text: "👤 Мои подписки", callback_data: "menu:subscriptions" }],
 ] };
 
 interface TelegramUpdate {
@@ -68,14 +68,16 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
             callback.message?.chat.type === "private") {
           const [action, target, serial] = (callback.data ?? "").split(":");
           let answer: string | undefined;
-          if (action === "detach" && target && serial) {
-            const name = await detachSubscription(env, target, serial);
-            answer = "Подписка уже отключена или недоступна.";
+          if ((action === "detach" || action === "restore") && target && serial) {
+            const enable = action === "restore";
+            const name = await changeSubscription(env, target, serial, enable);
+            answer = "Подписка уже в нужном состоянии или недоступна.";
             if (name) {
-              answer = "Подписка отключена.";
+              answer = enable ? "Подписка восстановлена." : "Подписка отключена.";
               try {
                 await new TelegramClient(env.TELEGRAM_BOT_TOKEN, target)
-                  .sendStatusMessage(`🔕 Оповещения по инвертору «${name}» отключены.`, false);
+                  .sendStatusMessage(enable ? `🔔 Оповещения по инвертору «${name}» снова включены.`
+                    : `🔕 Оповещения по инвертору «${name}» отключены.`, false);
               } catch {
                 answer += " Получателю не удалось отправить уведомление.";
               }
@@ -87,7 +89,7 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
             callback_query_id: callback.id, ...(answer ? { text: answer, show_alert: true } : {}),
           });
           if (action === "menu" && target &&
-              ["admin", "status", "add", "requests", "stations", "subscriptions", "bind", "unbind"].includes(target)) {
+              ["admin", "status", "add", "requests", "stations", "recipients", "subscriptions", "bind", "unbind"].includes(target)) {
             return handleMessage({
               chat: callback.message.chat,
               from: callback.from,
