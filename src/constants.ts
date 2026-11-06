@@ -5,5 +5,5 @@ export const DEYE_API = "https://eu1-developer.deyecloud.com/v1.0";
 export const REQUEST_TIMEOUT_MS = 8000;
 export const VOLTAGE_MAX_AGE_MS = 15 * 60_000;
 export const GRID_PRESENT_MIN_VOLTS = 100;
-export const DEFAULT_PHASE_KEYS = ["Grid Voltage L1", "Grid Voltage L2", "Grid Voltage L3"];
+export const GRID_PHASE_KEYS = ["GridVoltageL1", "GridVoltageL2", "GridVoltageL3"];
 export const DISPLAY_TIME_ZONE = "Europe/Kiev";

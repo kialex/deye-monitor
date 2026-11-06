@@ -1,4 +1,4 @@
-import { DEFAULT_PHASE_KEYS, DISPLAY_TIME_ZONE, GRID_PRESENT_MIN_VOLTS, VOLTAGE_MAX_AGE_MS } from "./constants";
+import { GRID_PHASE_KEYS, DISPLAY_TIME_ZONE, GRID_PRESENT_MIN_VOLTS, VOLTAGE_MAX_AGE_MS } from "./constants";
 import type { Device, Station } from "./deye";
 
 function parseStationTime(value: Station["lastUpdateTime"]): number {
@@ -6,10 +6,15 @@ function parseStationTime(value: Station["lastUpdateTime"]): number {
   return value ? Date.parse(value) : NaN;
 }
 
-export function formatStatus(station?: Station, device?: Device, keys = DEFAULT_PHASE_KEYS): string {
-  const volts = keys.map(key => {
+function normalizeTelemetryKey(key: string): string {
+  return key.replace(/\s+/g, "").toLowerCase();
+}
+
+export function formatStatus(station?: Station, device?: Device): string {
+  const volts = GRID_PHASE_KEYS.map(key => {
+    const normalizedKey = normalizeTelemetryKey(key);
     const point = device?.dataList?.find(point =>
-      point.key.toLowerCase() === key.toLowerCase() && point.unit === "V");
+      normalizeTelemetryKey(point.key) === normalizedKey && point.unit === "V");
     if (!point || String(point.value).trim() === "") return undefined;
     const value = Number(point.value);
     return Number.isFinite(value) && value >= 0 ? value : undefined;

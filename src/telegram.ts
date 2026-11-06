@@ -54,7 +54,7 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
     try {
       const config = readDeyeConfig(env);
       const { station, device } = await new DeyeClient(config).getTelemetry();
-      text = formatStatus(station, device, config.phaseKeys);
+      text = formatStatus(station, device);
     } catch {
       console.warn("Deye Cloud status request failed");
       text = "Не удалось получить данные Deye Cloud. Попробуй ещё раз позже.";

@@ -8,5 +8,3 @@ DEYE_EMAIL=""
 DEYE_PASSWORD=""
 DEYE_STATION_ID=""
 DEYE_DEVICE_SN=""
-# Optional comma-separated telemetry keys, in phase order.
-# DEYE_PHASE_KEYS="Grid Voltage L1,Grid Voltage L2,Grid Voltage L3"

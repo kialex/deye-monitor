@@ -8,7 +8,6 @@ export interface Env {
   DEYE_PASSWORD: string;
   DEYE_STATION_ID: string;
   DEYE_DEVICE_SN: string;
-  DEYE_PHASE_KEYS?: string;
 }
 
 export function readDeyeConfig(env: Env) {
@@ -25,7 +24,6 @@ export function readDeyeConfig(env: Env) {
     appSecret: env.DEYE_APP_SECRET,
     email: env.DEYE_EMAIL,
     password: env.DEYE_PASSWORD,
-    phaseKeys: env.DEYE_PHASE_KEYS?.split(",").map(key => key.trim()),
   };
 }
 
