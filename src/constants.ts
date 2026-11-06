@@ -1,0 +1,9 @@
+export const STATUS_BUTTON = "⚡ Состояние";
+export const TELEGRAM_WEBHOOK_PATH = "/telegram/webhook";
+export const TELEGRAM_API = "https://api.telegram.org";
+export const DEYE_API = "https://eu1-developer.deyecloud.com/v1.0";
+export const REQUEST_TIMEOUT_MS = 8000;
+export const VOLTAGE_MAX_AGE_MS = 15 * 60_000;
+export const GRID_PRESENT_MIN_VOLTS = 100;
+export const DEFAULT_PHASE_KEYS = ["Grid Voltage L1", "Grid Voltage L2", "Grid Voltage L3"];
+export const DISPLAY_TIME_ZONE = "Europe/Kiev";
