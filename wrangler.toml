@@ -1,6 +1,7 @@
 name = "deye-monitor"
 main = "src/index.ts"
 compatibility_date = "2026-11-06"
+keep_vars = true
 
 [observability]
 enabled = true
