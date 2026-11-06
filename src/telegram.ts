@@ -40,47 +40,43 @@ export class TelegramClient {
   }
 }
 
-const ownerActions = new Map([
-  ["Состояние", "/status"],
-  ["Мои подписки", "/subscriptions"],
-  ["Администрирование", "/manage"],
-]);
-
-const ownerMenu = {
-  keyboard: [...ownerActions.keys()].map(text => [{ text }]),
-  resize_keyboard: true,
-  is_persistent: true,
-};
-
-const backToMenu = [{ text: "‹ Главное меню", callback_data: "menu:admin" }];
-
-const backToManagement = [{ text: "‹ Администрирование", callback_data: "menu:manage" }];
+const mainActions = [
+  [STATUS_BUTTON, "/status"],
+  ["👤 Мои подписки", "/subscriptions"],
+  ["⚙️ Администрирование", "/manage"],
+];
 
 const ownerSections = {
   manage: {
     title: "Администрирование",
-    inline_keyboard: [
-  [{ text: "Инверторы", callback_data: "menu:devices" }, { text: "Оповещения", callback_data: "menu:alerts" }],
-      backToMenu,
-    ],
+    actions: [["📋 Инверторы", "/devices"], ["🔔 Оповещения", "/alerts"], ["↩️ Главное меню", "/admin"]],
   },
   devices: {
     title: "Инверторы",
-    inline_keyboard: [
-      [{ text: "Список станций", callback_data: "menu:stations" }],
-      [{ text: "Добавить инвертор", callback_data: "menu:add" }],
-      backToManagement,
-    ],
+    actions: [["📋 Список станций", "/stations"], ["➕ Добавить инвертор", "/add"], ["↩️ Администрирование", "/manage"]],
   },
   alerts: {
     title: "Оповещения",
-    inline_keyboard: [
-      [{ text: "Заявки", callback_data: "menu:requests" }],
-      [{ text: "Все подписки", callback_data: "menu:recipients" }],
-      backToManagement,
-    ],
+    actions: [["📨 Заявки", "/requests"], ["👥 Все подписки", "/recipients"], ["↩️ Администрирование", "/manage"]],
   },
 };
+
+const ownerActions = new Map<string, string>(
+  [...mainActions, ...Object.values(ownerSections).flatMap(section => section.actions)]
+    .flatMap(([label, command]): [string, string][] => [
+      [label, command], [label.slice(label.indexOf(" ") + 1), command],
+    ]),
+);
+
+function ownerKeyboard(actions: string[][]) {
+  return {
+    keyboard: actions.map(([text]) => [{ text }]),
+    resize_keyboard: true,
+    is_persistent: true,
+  };
+}
+
+const ownerMenu = ownerKeyboard(mainActions);
 
 interface TelegramUpdate {
   update_id: number;
@@ -187,9 +183,10 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
   const userId = String(message.from?.id ?? "");
   const owner = !!ownerId && userId === ownerId && !message.from?.is_bot;
   const privateChat = message.chat.type === "private" && chatId === userId;
-  const [rawCommand, ...args] = message.text.trim().split(/\s+/);
-  const command = (owner && privateChat ? ownerActions.get(message.text.trim()) : undefined)
-    ?? rawCommand.split("@")[0];
+  const label = message.text.trim();
+  const action = owner && privateChat ? ownerActions.get(label) : undefined;
+  const [rawCommand, ...args] = action ? [action] : label.split(/\s+/);
+  const command = rawCommand.split("@")[0];
   const client = new TelegramClient(env.TELEGRAM_BOT_TOKEN, chatId);
 
   try {
@@ -206,7 +203,7 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
 
     if (owner && privateChat && ["/start", "/admin"].includes(command)) {
       if (updateId !== undefined) try {
-        await client.configureOwnerMenu();
+        await client.clearOwnerCommandMenu();
       } catch {
         console.warn("Telegram owner menu configuration failed");
       }
@@ -216,7 +213,7 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
 
     if (owner && privateChat && (command === "/manage" || command === "/devices" || command === "/alerts")) {
       const section = command === "/devices" ? ownerSections.devices : command === "/alerts" ? ownerSections.alerts : ownerSections.manage;
-      await client.sendStatusMessage(section.title, { inline_keyboard: section.inline_keyboard });
+      await client.sendStatusMessage(section.title, ownerKeyboard(section.actions));
       return new Response(null, { status: 204 });
     }
 
@@ -253,7 +250,7 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
         return new TextEncoder().encode(data).length <= 64
           ? [[{ text: ((enabled ? "Отключить · " : "Включить · ") + row.name).slice(0, 64), callback_data: data }]] : [];
       });
-      await client.sendStatusMessage("Мои подписки", { inline_keyboard: [...buttons, backToMenu] });
+      await client.sendStatusMessage("Мои подписки", buttons.length ? { inline_keyboard: buttons } : false);
       return new Response(null, { status: 204 });
     }
 
@@ -307,9 +304,7 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
       return new TextEncoder().encode(data).length <= 64
         ? [[{ text: row.name.slice(0, 64), callback_data: data }]] : [];
     });
-    await client.sendStatusMessage(selected ? text.slice(0, 3900) : "Выбери станцию.", {
-      inline_keyboard: [...buttons, backToMenu],
-    });
+    await client.sendStatusMessage(selected ? text.slice(0, 3900) : "Выбери станцию.", buttons.length ? { inline_keyboard: buttons } : false);
   } catch {
     console.warn("Telegram update processing failed");
     return new Response(null, { status: 502 });
