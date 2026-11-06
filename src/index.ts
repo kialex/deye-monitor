@@ -1,3 +1,4 @@
+import { handleSetup, SETUP_PATH } from "./owner";
 import { TELEGRAM_WEBHOOK_PATH } from "./constants";
 import type { Env } from "./env";
 import { monitorGrid } from "./grid-monitor";
@@ -13,6 +14,7 @@ export default {
     if (path === "/" && request.method === "GET") {
       return Response.json({ service: "deye-monitor", status: "ok" });
     }
+    if (path === SETUP_PATH) return handleSetup(request, env);
     if (path === TELEGRAM_WEBHOOK_PATH) return handleTelegramWebhook(request, env);
     return new Response(null, { status: 404 });
   },

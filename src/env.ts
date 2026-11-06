@@ -1,6 +1,8 @@
 import type { GridDatabase } from "./grid-monitor";
 
 export interface Env {
+  ADMIN_TELEGRAM_USER_ID?: string;
+  DEYE_CREDENTIAL_KEY?: string;
   GRID_DB?: GridDatabase;
   TELEGRAM_BOT_TOKEN: string;
   TELEGRAM_CHAT_ID: string;
