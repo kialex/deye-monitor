@@ -1,5 +1,5 @@
-import { recordMembership, requestButtons, resolveRequest, type ChatMembership } from "./chat-requests";
-import { adminReply } from "./telegram-admin";
+import { recordMembership, recordPrivateRequest, requestButtons, resolveRequest, type ChatMembership } from "./chat-requests";
+import { adminReply, detachSubscription } from "./telegram-admin";
 import { legacyDevice, listDevices, loadConfig } from "./owner";
 import { STATUS_BUTTON, TELEGRAM_API } from "./constants";
 import { DeyeClient } from "./deye";
@@ -38,7 +38,7 @@ interface TelegramUpdate {
   update_id: number;
   my_chat_member?: ChatMembership;
   callback_query?: { id: string; from: { id: number }; message?: { chat: { id: number; type: string } }; data?: string };
-  message?: { chat: { id: number; type: string }; from?: { id: number; is_bot?: boolean }; text?: string };
+  message?: { chat: { id: number; type: string }; from?: { id: number; is_bot?: boolean; first_name?: string; last_name?: string }; text?: string };
 }
 
 export async function handleTelegramWebhook(request: Request, env: Env): Promise<Response> {
@@ -61,22 +61,28 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
     try {
       if (update.my_chat_member) {
         const pending = await recordMembership(env, update.my_chat_member, update.update_id);
-        if (pending) {
-          const buttons = await requestButtons(env, pending.chat_id);
-          await client.sendStatusMessage(
-            "🔔 Новый чат хочет получать оповещения\n" + pending.title +
-            "\nВыбери инвертор. Если его ещё нет, используй /add, затем /requests.",
-            { inline_keyboard: buttons },
-          );
-          await env.GRID_DB?.prepare("UPDATE chat_requests SET notified_at = ?1 WHERE chat_id = ?2 AND update_id = ?3 RETURNING chat_id")
-            .bind(Date.now(), pending.chat_id, update.update_id).first();
-        }
+        if (pending) await notifyOwnerOfRequest(env, ownerId, pending, update.update_id);
       } else if (update.callback_query) {
         const callback = update.callback_query;
         if (String(callback.from.id) === ownerId && String(callback.message?.chat.id) === ownerId &&
             callback.message?.chat.type === "private") {
           const [action, target, serial] = (callback.data ?? "").split(":");
-          const answer = action === "menu" ? undefined : await resolveRequest(env, action, target ?? "", serial);
+          let answer: string | undefined;
+          if (action === "detach" && target && serial) {
+            const name = await detachSubscription(env, target, serial);
+            answer = "Подписка уже отключена или недоступна.";
+            if (name) {
+              answer = "Подписка отключена.";
+              try {
+                await new TelegramClient(env.TELEGRAM_BOT_TOKEN, target)
+                  .sendStatusMessage(`🔕 Оповещения по инвертору «${name}» отключены.`, false);
+              } catch {
+                answer += " Получателю не удалось отправить уведомление.";
+              }
+            }
+          } else if (action !== "menu") {
+            answer = await processChatRequest(env, action, target ?? "", serial);
+          }
           await post(`${TELEGRAM_API}/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, {
             callback_query_id: callback.id, ...(answer ? { text: answer, show_alert: true } : {}),
           });
@@ -97,10 +103,33 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
     }
   }
 
-  return handleMessage(update?.message, request, env);
+  return handleMessage(update?.message, request, env, update.update_id);
 }
 
-async function handleMessage(message: TelegramUpdate["message"], request: Request, env: Env): Promise<Response> {
+async function processChatRequest(env: Env, action: string, chatId: string, serial?: string): Promise<string> {
+  const result = await resolveRequest(env, action, chatId, serial);
+  if (typeof result === "string") return result;
+  try {
+    await new TelegramClient(env.TELEGRAM_BOT_TOKEN, chatId).sendStatusMessage(result.notification, false);
+    return result.confirmation;
+  } catch {
+    return result.confirmation + " Подтверждение не удалось отправить.";
+  }
+}
+
+async function notifyOwnerOfRequest(
+  env: Env, ownerId: string, pending: { chat_id: string; title: string }, updateId: number,
+) {
+  const client = new TelegramClient(env.TELEGRAM_BOT_TOKEN, ownerId);
+  await client.sendStatusMessage(
+    "🔔 Запрос на оповещения\n" + pending.title + "\nВыбери инвертор.",
+    { inline_keyboard: await requestButtons(env, pending.chat_id) },
+  );
+  await env.GRID_DB?.prepare("UPDATE chat_requests SET notified_at = ?1 WHERE chat_id = ?2 AND update_id = ?3 RETURNING chat_id")
+    .bind(Date.now(), pending.chat_id, updateId).first();
+}
+
+async function handleMessage(message: TelegramUpdate["message"], request: Request, env: Env, updateId?: number): Promise<Response> {
   const ownerId = env.ADMIN_TELEGRAM_USER_ID;
   if (!message?.chat || typeof message.text !== "string") return new Response(null, { status: 204 });
 
@@ -113,6 +142,17 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
   const client = new TelegramClient(env.TELEGRAM_BOT_TOKEN, chatId);
 
   try {
+    if (ownerId && !owner && privateChat && !message.from?.is_bot &&
+        command === "/start" && updateId !== undefined) {
+      const name = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(" ");
+      const pending = await recordPrivateRequest(env, chatId, "Личный чат · " + (name || chatId), updateId);
+      if (pending) {
+        await notifyOwnerOfRequest(env, ownerId, pending, pending.update_id);
+        await client.sendStatusMessage("Заявка на оповещения отправлена владельцу.", false);
+      }
+      return new Response(null, { status: 204 });
+    }
+
     if (owner && privateChat && ["/start", "/admin"].includes(command)) {
       await client.sendStatusMessage("Управление Deye", { remove_keyboard: true });
       await client.sendStatusMessage("Выбери действие.", ownerMenu);
@@ -133,7 +173,7 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
     }
 
     if (owner && privateChat && command === "/approve") {
-      await client.sendStatusMessage(await resolveRequest(env, "approve", args[0] ?? "", args[1]), false);
+      await client.sendStatusMessage(await processChatRequest(env, "approve", args[0] ?? "", args[1]), false);
       return new Response(null, { status: 204 });
     }
 
@@ -156,11 +196,12 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
       return new Response(null, { status: 204 });
     }
 
+    const adminButtons: typeof ownerMenu.inline_keyboard = [];
     const adminText = owner && (privateChat || ["/admin", "/bind", "/unbind"].includes(command))
-      ? await adminReply(command, args, chatId, ownerId, env, new URL(request.url).origin)
+      ? await adminReply(command, args, chatId, ownerId, env, new URL(request.url).origin, adminButtons)
       : undefined;
     if (adminText) {
-      await client.sendStatusMessage(adminText, owner && privateChat ? ownerMenu : false);
+      await client.sendStatusMessage(adminText, owner && privateChat ? { inline_keyboard: [...adminButtons, ...ownerMenu.inline_keyboard] } : false);
       return new Response(null, { status: 204 });
     }
 

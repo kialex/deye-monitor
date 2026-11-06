@@ -1,3 +1,5 @@
+import { VOLTAGE_MAX_AGE_MS } from "./constants";
+import { formatTime } from "./status";
 import type { Env } from "./env";
 import { legacyDevice, listDevices } from "./owner";
 
@@ -36,6 +38,19 @@ export async function recordMembership(env: Env, change: ChatMembership, updateI
   `).bind(chatId, updateId).first<{ chat_id: string; title: string }>() : null;
 }
 
+export async function recordPrivateRequest(env: Env, chatId: string, title: string, updateId: number) {
+  const db = env.GRID_DB;
+  if (!db) return null;
+  await db.prepare(`
+    INSERT INTO chat_requests (chat_id, title, update_id, state)
+    VALUES (?1, ?2, ?3, 'pending') ON CONFLICT(chat_id) DO NOTHING RETURNING chat_id
+  `).bind(chatId, title, updateId).first();
+  return db.prepare(`
+    SELECT chat_id, title, update_id FROM chat_requests
+    WHERE chat_id = ?1 AND state = 'pending' AND notified_at IS NULL
+  `).bind(chatId).first<{ chat_id: string; title: string; update_id: number }>();
+}
+
 export async function requestButtons(env: Env, chatId: string) {
   const devices = env.GRID_DB ? await listDevices(env.GRID_DB) : [];
   const legacy = legacyDevice(env);
@@ -48,9 +63,9 @@ export async function requestButtons(env: Env, chatId: string) {
   return [...buttons.slice(0, 30), [{ text: "Отклонить", callback_data: `ignore:${chatId}` }]];
 }
 
-export async function resolveRequest(env: Env, action: string, chatId: string, serial?: string): Promise<string> {
+export async function resolveRequest(env: Env, action: string, chatId: string, serial?: string): Promise<string | { confirmation: string; notification: string }> {
   const db = env.GRID_DB;
-  if (!db || !/^-\d{1,16}$/.test(chatId)) return "Заявка недоступна.";
+  if (!db || !/^-?[1-9]\d{0,15}$/.test(chatId)) return "Заявка недоступна.";
   if (action === "ignore") {
     const result = await db.prepare(`
       UPDATE chat_requests SET state = 'ignored' WHERE chat_id = ?1 AND state = 'pending' RETURNING chat_id
@@ -58,7 +73,7 @@ export async function resolveRequest(env: Env, action: string, chatId: string, s
     return result ? "Заявка отклонена." : "Заявка уже обработана.";
   }
   if (action !== "approve" || !serial || !/^[\w-]{1,100}$/.test(serial)) return "Выбери зарегистрированный инвертор.";
-  const device = await db.prepare("SELECT device_sn FROM monitored_devices WHERE device_sn = ?1").bind(serial).first();
+  const device = await db.prepare("SELECT name FROM monitored_devices WHERE device_sn = ?1").bind(serial).first<{ name: string }>();
   if (!device && serial !== env.DEYE_DEVICE_SN) return "Инвертор не зарегистрирован.";
   const [result] = await db.batch([
     db.prepare(`
@@ -68,5 +83,24 @@ export async function resolveRequest(env: Env, action: string, chatId: string, s
     `).bind(serial, chatId),
     db.prepare("UPDATE chat_requests SET state = 'approved' WHERE chat_id = ?1 AND state = 'pending'").bind(chatId),
   ]);
-  return result.results.length ? `Чат подписан на отключение и восстановление сети · ${serial}.` : "Заявка уже обработана.";
+  if (!result.results.length) return "Заявка уже обработана.";
+
+  const reading = await db.prepare(
+    "SELECT state, measured_at FROM grid_state WHERE device_sn = ?1",
+  ).bind(serial).first<{ state: string; measured_at: number }>();
+  const age = reading ? Date.now() - reading.measured_at : Infinity;
+  const status = reading && age >= 0 && age <= VOLTAGE_MAX_AGE_MS
+    ? (reading.state === "present" ? "Городская сеть доступна" : "Городская сеть отключена") +
+      " · замер " + formatTime(reading.measured_at)
+    : "Свежих данных о сети пока нет";
+
+  return {
+    confirmation: `Чат подписан на отключение и восстановление сети · ${serial}.`,
+    notification: [
+      "✅ Заявка одобрена",
+      `Инвертор — ${device?.name ?? "Текущая станция"} · ${serial}`,
+      status,
+      "Теперь этот чат будет получать оповещения об отключении и восстановлении сети.",
+    ].join("\n"),
+  };
 }
