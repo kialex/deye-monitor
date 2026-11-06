@@ -7,7 +7,7 @@ export default {
   },
 
   async scheduled(): Promise<void> {
-    console.log("Минутная проверка запущена  OK", {
+    console.log("Минутная проверка запущена  OK - OK", {
       time: new Date().toISOString(),
     });
   },
