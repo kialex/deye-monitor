@@ -94,7 +94,14 @@ export async function handleSetup(request: Request, env: Env): Promise<Response>
     <script>document.getElementById("token").value = location.hash.slice(1); history.replaceState(null, "", location.pathname);</script>
   `);
   if (request.method !== "POST") return new Response(null, { status: 405 });
-  if (request.headers.get("Origin") !== new URL(request.url).origin) return new Response(null, { status: 403 });
+  const origin = request.headers.get("Origin");
+  const fetchSite = request.headers.get("Sec-Fetch-Site");
+  // The no-referrer policy can make the browser send Origin: null.
+  // The one-time token still authenticates the submission.
+  if ((origin && origin !== "null" && origin !== new URL(request.url).origin) ||
+      fetchSite === "cross-site" || fetchSite === "same-site") {
+    return page("Открой ссылку из личного чата с ботом и отправь форму с этой страницы.", 403);
+  }
 
   try {
     const form = await request.formData();
