@@ -30,6 +30,25 @@ export interface DeyeStationDevices {
   deviceListItems?: { deviceSn: string; deviceType: string }[];
 }
 
+export interface StationHistoryItem {
+  year?: number;
+  month?: number;
+  day?: number;
+  timeStamp?: number | string | null;
+  consumptionValue?: number | null;
+  purchaseValue?: number | null;
+  generationValue?: number | null;
+  chargeValue?: number | null;
+  dischargeValue?: number | null;
+  consumptionPower?: number | null;
+  batterySOC?: number | null;
+}
+
+interface StationHistoryResponse {
+  stationDataItems?: StationHistoryItem[];
+  total?: number;
+}
+
 export class DeyeClient {
   constructor(private readonly config: DeyeConfig) {}
 
@@ -94,6 +113,25 @@ export class DeyeClient {
       if (entries.length < size || (result.total !== undefined && faults.length >= result.total)) return faults;
       if (page === 20) throw new Error("Deye fault list too large");
     }
+  }
+
+  async getStatistics(startDate: string, endDate: string, startTimestamp: number, endTimestamp: number) {
+    const token = await this.getAccessToken();
+    const [daily, power] = await Promise.allSettled([
+      this.request<StationHistoryResponse>("/station/history", {
+        stationId: this.config.stationId, granularity: 2, startAt: startDate, endAt: endDate,
+      }, token),
+      this.request<StationHistoryResponse>("/station/history/power", {
+        stationId: this.config.stationId, startTimestamp, endTimestamp,
+      }, token),
+    ]);
+    if (daily.status !== "fulfilled") throw new Error("Deye daily statistics unavailable");
+    const samples = power.status === "fulfilled" ? power.value.stationDataItems ?? [] : [];
+    return {
+      days: daily.value.stationDataItems ?? [],
+      samples,
+      samplesTruncated: power.status !== "fulfilled" || (power.value.total ?? samples.length) > samples.length,
+    };
   }
 
   async getTelemetry() {

@@ -1,3 +1,4 @@
+import { getStatisticsReport, type StatisticsPeriod } from "./statistics";
 import { recordMembership, recordPrivateRequest, requestButtons, resolveRequest, type ChatMembership } from "./chat-requests";
 import { adminReply, changeSubscription } from "./telegram-admin";
 import { legacyDevice, listDevices, loadConfig } from "./owner";
@@ -29,7 +30,7 @@ export class TelegramClient {
         chat_id: this.chatId,
         text: alertFormatting ? text.split("\n").map(line => {
           const safe = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          if (/^(🔋|🪫|🟢|⚠️|✅|📡|🚨|⚡|⏹|🔴|🟠)/u.test(line)) return `<b>${safe}</b>`;
+          if (/^(🔋|🪫|🟢|⚠️|✅|📡|🚨|⚡|⏹|🔴|🟠|📊|🏠|🔌|☀️)/u.test(line)) return `<b>${safe}</b>`;
           if (/^L1 — /.test(line)) return safe.replace(/(L[123] — )([\d\s.,]+ В)/g, "$1<b>$2</b>");
           return /^(Заряд|Заряд батареи|Мощность|Проработал|Примерное время работы|Потребление|На аккумуляторах|Нижний порог|Последнее обновление|Питание) — /.test(line)
             ? safe.replace(" — ", " — <b>") + "</b>" : safe;
@@ -49,11 +50,16 @@ export class TelegramClient {
 
 const mainActions = [
   [STATUS_BUTTON, "/status"],
+  ["📊 Статистика", "/statistics"],
   ["👤 Мои подписки", "/subscriptions"],
   ["⚙️ Администрирование", "/manage"],
 ];
 
 const ownerSections = {
+  statistics: {
+    title: "📊 Статистика · выбери период",
+    actions: [["📅 Сегодня", "/statstoday"], ["📅 Вчера", "/statsyesterday"], ["📅 7 дней", "/statsweek"], ["↩️ Главное меню", "/admin"]],
+  },
   manage: {
     title: "Администрирование",
     actions: [["📋 Инверторы", "/devices"], ["🔔 Оповещения", "/alerts"], ["↩️ Главное меню", "/admin"]],
@@ -144,7 +150,7 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
             callback_query_id: callback.id, ...(answer ? { text: answer, show_alert: true } : {}),
           });
           if (action === "menu" && target &&
-              ["admin", "status", "manage", "devices", "alerts", "add", "requests", "stations", "recipients", "subscriptions", "bind", "unbind"].includes(target)) {
+              ["statstoday", "statsyesterday", "statsweek", "admin", "status", "manage", "devices", "alerts", "add", "requests", "stations", "recipients", "subscriptions", "bind", "unbind"].includes(target)) {
             return handleMessage({
               chat: callback.message.chat,
               from: callback.from,
@@ -219,6 +225,39 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
         console.warn("Telegram owner menu configuration failed");
       }
       await client.sendStatusMessage("Выбери действие.", ownerMenu);
+      return new Response(null, { status: 204 });
+    }
+
+    if (owner && privateChat && command === "/statistics") {
+      await client.sendStatusMessage(ownerSections.statistics.title, ownerKeyboard(ownerSections.statistics.actions));
+      return new Response(null, { status: 204 });
+    }
+
+    const statisticsPeriod: StatisticsPeriod | undefined = command === "/statstoday" ? "today"
+      : command === "/statsyesterday" ? "yesterday" : command === "/statsweek" ? "week" : undefined;
+    if (owner && privateChat && statisticsPeriod) {
+      const devices = env.GRID_DB ? await listDevices(env.GRID_DB) : [];
+      const legacy = legacyDevice(env);
+      const choices = legacy && !devices.some(row => row.device_sn === legacy.device_sn) ? [legacy, ...devices] : devices;
+      const selected = args.length ? choices.find(row => row.device_sn === args[0]) : choices.length === 1 ? choices[0] : undefined;
+      if (!selected) {
+        const buttons = choices.slice(0, 30).flatMap(row => {
+          const data = "menu:" + command.slice(1) + ":" + row.device_sn;
+          return new TextEncoder().encode(data).length <= 64 ? [[{ text: row.name.slice(0, 64), callback_data: data }]] : [];
+        });
+        await client.sendStatusMessage(choices.length ? "Выбери станцию для статистики." : "Сначала добавь инвертор в разделе «Администрирование».",
+          buttons.length ? { inline_keyboard: buttons } : false);
+      } else {
+        try {
+          const row = devices.find(device => device.device_sn === selected.device_sn);
+          const config = row ? await loadConfig(env, row) : readDeyeConfig(env);
+          const report = await getStatisticsReport(config, statisticsPeriod);
+          await client.sendStatusMessage((choices.length > 1 ? selected.name + "\n\n" : "") + report, false, true);
+        } catch {
+          console.warn("Deye statistics request failed");
+          await client.sendStatusMessage("Не удалось получить статистику Deye. Попробуй ещё раз позже.", false);
+        }
+      }
       return new Response(null, { status: 204 });
     }
 
