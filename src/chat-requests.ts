@@ -18,17 +18,18 @@ export async function recordMembership(env: Env, change: ChatMembership, updateI
   const joined = active(change.new_chat_member);
   if (joined === active(change.old_chat_member)) return null;
 
+  const botId = env.TELEGRAM_BOT_TOKEN.split(":")[0];
   const chatId = String(change.chat.id);
   const name = [change.chat.first_name, change.chat.last_name].filter(Boolean).join(" ");
   const title = change.chat.type === "private" ? "Личный чат · " + (name || chatId) : change.chat.title || chatId;
   await db.batch([
     db.prepare(`
-      INSERT INTO chat_requests (chat_id, title, update_id, state)
-      VALUES (?1, ?2, ?3, ?4)
+      INSERT INTO chat_requests (chat_id, title, update_id, state, bot_id)
+      VALUES (?1, ?2, ?3, ?4, ?5)
       ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title, update_id = excluded.update_id,
-        state = excluded.state, notified_at = NULL
-      WHERE excluded.update_id > chat_requests.update_id
-    `).bind(chatId, title, updateId, joined ? "pending" : "removed"),
+        state = excluded.state, notified_at = NULL, bot_id = excluded.bot_id
+      WHERE excluded.bot_id <> chat_requests.bot_id OR excluded.update_id > chat_requests.update_id
+    `).bind(chatId, title, updateId, joined ? "pending" : "removed", botId),
     db.prepare(`
       UPDATE chat_subscriptions SET enabled = 0 WHERE chat_id = ?1
       AND EXISTS (SELECT 1 FROM chat_requests WHERE chat_id = ?1 AND update_id = ?2 AND state = 'removed')
@@ -43,10 +44,15 @@ export async function recordMembership(env: Env, change: ChatMembership, updateI
 export async function recordPrivateRequest(env: Env, chatId: string, title: string, updateId: number) {
   const db = env.GRID_DB;
   if (!db) return null;
+  const botId = env.TELEGRAM_BOT_TOKEN.split(":")[0];
   await db.prepare(`
-    INSERT INTO chat_requests (chat_id, title, update_id, state)
-    VALUES (?1, ?2, ?3, 'pending') ON CONFLICT(chat_id) DO NOTHING RETURNING chat_id
-  `).bind(chatId, title, updateId).first();
+    INSERT INTO chat_requests (chat_id, title, update_id, state, bot_id)
+    VALUES (?1, ?2, ?3, 'pending', ?4)
+    ON CONFLICT(chat_id) DO UPDATE SET title = excluded.title, update_id = excluded.update_id,
+      state = 'pending', notified_at = NULL, bot_id = excluded.bot_id
+    WHERE chat_requests.bot_id <> excluded.bot_id
+    RETURNING chat_id
+  `).bind(chatId, title, updateId, botId).first();
   return db.prepare(`
     SELECT chat_id, title, update_id FROM chat_requests
     WHERE chat_id = ?1 AND state = 'pending' AND notified_at IS NULL

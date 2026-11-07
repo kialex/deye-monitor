@@ -1,0 +1,1 @@
+ALTER TABLE chat_requests ADD COLUMN bot_id TEXT NOT NULL DEFAULT '';
