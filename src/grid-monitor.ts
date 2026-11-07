@@ -3,7 +3,7 @@ import { listDevices, loadConfig } from "./owner";
 import { estimateBatteryRuntime, getBatterySettings } from "./battery";
 import { DeyeClient } from "./deye";
 import { readDeyeConfig, type DeyeConfig, type Env } from "./env";
-import { formatGridAlert, readGridTransition } from "./status";
+import { readGridTransition } from "./status";
 import { TelegramClient } from "./telegram";
 
 interface Statement {
@@ -58,7 +58,7 @@ async function deliverAlerts(db: GridDatabase, env: Env, deviceSn: string): Prom
         RETURNING (SELECT message FROM grid_alerts WHERE id = ?2) AS message
       `).bind(lease, chat.alert_id, chat.chat_id, Date.now()).first<{ message: string }>();
       if (!alert) continue;
-      await new TelegramClient(env.TELEGRAM_BOT_TOKEN, chat.chat_id).sendStatusMessage(alert.message, false);
+      await new TelegramClient(env.TELEGRAM_BOT_TOKEN, chat.chat_id).sendStatusMessage(alert.message, false, true);
       await db.prepare(`
         UPDATE alert_deliveries SET sent_at = ?1
         WHERE alert_id = ?2 AND chat_id = ?3 AND lease_until = ?4 RETURNING alert_id
@@ -67,6 +67,23 @@ async function deliverAlerts(db: GridDatabase, env: Env, deviceSn: string): Prom
       console.warn("Grid alert delivery failed");
     }
   }
+  await db.batch([
+    db.prepare(`
+      DELETE FROM alert_deliveries
+      WHERE alert_id IN (
+        SELECT a.id FROM grid_alerts a
+        WHERE a.device_sn = ?1 AND a.queued_at IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM alert_deliveries d WHERE d.alert_id = a.id AND d.sent_at IS NULL
+          )
+      )
+    `).bind(deviceSn),
+    db.prepare(`
+      DELETE FROM grid_alerts
+      WHERE device_sn = ?1 AND queued_at IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM alert_deliveries WHERE alert_id = grid_alerts.id)
+    `).bind(deviceSn),
+  ]);
 }
 
 async function monitorDevice(db: GridDatabase, env: Env, config: DeyeConfig, name?: string): Promise<void> {
@@ -76,17 +93,10 @@ async function monitorDevice(db: GridDatabase, env: Env, config: DeyeConfig, nam
     const { station, device } = await client.getTelemetry().catch(() => ({ station: undefined, device: undefined }));
     const { state, measuredAt } = readGridTransition(device);
     const runtime = state === "absent" ? estimateBatteryRuntime(settings, device, station, measuredAt) : undefined;
+    await updateMonitorNotifications(db, client, config.deviceSn, name, device, station, settings?.shutdown_soc, runtime);
     if (state) {
-      const alert = formatGridAlert(state, measuredAt, station, runtime);
-      const message = name ? name + "\n" + alert : alert;
-
-      // D1 runs a batch atomically. Only a newer sample can enqueue an alert or update the state.
+      // Keep the latest confirmed state for status consumers; notifications deduplicate in their own snapshot.
       await db.batch([
-        db.prepare(`
-          INSERT INTO grid_alerts (device_sn, measured_at, message)
-          SELECT device_sn, ?2, ?4 FROM grid_state
-          WHERE device_sn = ?1 AND measured_at < ?2 AND state <> ?3
-        `).bind(config.deviceSn, measuredAt, state, message),
         db.prepare(`
           INSERT INTO grid_state (device_sn, measured_at, state, changed_at)
           VALUES (?1, ?2, ?3, ?2)
@@ -99,7 +109,6 @@ async function monitorDevice(db: GridDatabase, env: Env, config: DeyeConfig, nam
         `).bind(config.deviceSn, measuredAt, state),
       ]);
     }
-    await updateMonitorNotifications(db, client, config.deviceSn, name, device, station, settings?.shutdown_soc, runtime);
   } finally {
     // Pending alerts can be delivered even while Deye Cloud is unavailable.
     await deliverAlerts(db, env, config.deviceSn);

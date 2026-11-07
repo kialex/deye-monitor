@@ -1,12 +1,15 @@
 import { VOLTAGE_MAX_AGE_MS } from "./constants";
 import type { DeyeClient, Device, Station } from "./deye";
 import type { GridDatabase } from "./grid-monitor";
-import { formatTime, parseStationTime, readGridTransition } from "./status";
+import { batteryDetails, DEFAULT_VOLTAGE_LIMITS, formatGridAlert, formatPhaseVoltages, gridProblem, parseStationTime, readGridTransition, type VoltageLimits } from "./status";
 
-const DEFAULT_VOLTAGE_LIMITS = { low_volts: 195.5, high_volts: 264.5 }; // 230 V ± 15%
+const OFFLINE_ALERT_MS = 30 * 60_000;
 const FAULT_LOOKBACK_MS = 24 * 60 * 60_000;
 
 interface Snapshot {
+  gridState?: "present" | "absent";
+  gridChangedAt?: number;
+  gridMeasuredAt?: number;
   checkedAt?: number;
   latestSample?: number;
   offline?: boolean;
@@ -18,23 +21,18 @@ interface Snapshot {
   faults?: Record<string, boolean>;
 }
 
-interface VoltageLimits {
-  low_volts: number;
-  high_volts: number;
-}
-
 function updateConnectivity(snapshot: Snapshot, measuredAt: number, now: number, messages: string[]) {
   snapshot.checkedAt ??= now;
   if (measuredAt > 0 && measuredAt <= now) {
     snapshot.latestSample = Math.max(snapshot.latestSample ?? 0, measuredAt);
   }
   const last = snapshot.latestSample ?? snapshot.checkedAt;
-  const offline = now - last >= VOLTAGE_MAX_AGE_MS;
+  const offline = now - last >= OFFLINE_ALERT_MS;
   if (offline && !snapshot.offline) {
-    const lastReading = snapshot.latestSample ? " Последний замер — " + formatTime(last) + "." : "";
-    messages.push("📡 Данные инвертора не обновляются 15 минут. Текущее состояние сети неизвестно." + lastReading);
+    const minutes = Math.floor((now - last) / 60_000);
+    messages.push(`📡 Нет свежих данных от инвертора\n\nПоследнее обновление — ${snapshot.latestSample ? minutes + " минут назад" : "неизвестно"}\nПитание дома и заряд сейчас неизвестны.`);
   } else if (!offline && snapshot.offline) {
-    messages.push("✅ Данные инвертора снова обновляются.");
+    messages.push("✅ Связь с инвертором восстановлена");
   }
   snapshot.offline = offline;
 }
@@ -60,13 +58,11 @@ function updateBattery(
 
   const percent = charge.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
   if (atShutdown) {
-    messages.push(`🪫 Аккумуляторы достигли нижнего порога — ${shutdown}%. Текущий заряд — ${percent}%.`);
+    messages.push(`🪫 Достигнут нижний порог заряда\n\nЗаряд — ${percent} %\nНижний порог — ${shutdown} %`);
     return;
   }
   const icon = charge < 50 ? "🪫" : "🔋";
-  messages.push(`${icon} Заряд аккумуляторов — ${percent}%.\n${runtime
-    ? "⏳ При текущем разряде осталось " + runtime + "."
-    : "⏳ Время работы пока неизвестно."}`);
+  messages.push(`${icon} Осталось ${percent} % заряда\n\n${batteryDetails(station, runtime).split("\n").slice(1).join("\n")}`);
 }
 
 function updatePhases(
@@ -76,9 +72,9 @@ function updatePhases(
   const previousSample = snapshot.phaseSample;
   snapshot.phaseSample = sample.measuredAt;
   const volts = sample.volts;
-  if (sample.state === "absent" || volts.some(value => value === undefined)) {
+  if (volts.every(value => value === 0) || volts.some(value => value === undefined)) {
     delete snapshot.phaseCandidate;
-    if (sample.state === "absent") delete snapshot.phaseConfirmed;
+    if (volts.every(value => value === 0)) delete snapshot.phaseConfirmed;
     return;
   }
   const phases = volts.map(value => {
@@ -96,12 +92,11 @@ function updatePhases(
   const normal = phases.every(phase => phase === "normal");
   if (snapshot.phaseConfirmed === signature) return;
   if (normal) {
-    if (snapshot.phaseConfirmed) messages.push("✅ Напряжение на всех фазах восстановилось.");
+    if (snapshot.phaseConfirmed) messages.push("✅ Напряжение на фазах восстановилось\n\n" + formatPhaseVoltages(volts));
   } else {
-    const deviations = phases.flatMap((phase, index) => phase === "normal" ? [] : [
-      `L${index + 1} — ${volts[index]} В (${{ missing: "нет напряжения", low: "ниже предела", high: "выше предела" }[phase]})`,
-    ]);
-    messages.push("⚡ Отклонение напряжения на фазах\n" + deviations.join("\n"));
+    const reason = gridProblem(volts, limits);
+    messages.push("⚠️ " + reason.charAt(0).toUpperCase() + reason.slice(1) + "\n\n" + formatPhaseVoltages(volts)
+      + `\nДопустимый диапазон — ${Math.round(limits.low_volts)}–${Math.round(limits.high_volts)} В`);
   }
   snapshot.phaseConfirmed = signature;
 }
@@ -118,9 +113,9 @@ async function updateFaults(client: DeyeClient, snapshot: Snapshot, now: number,
       const label = [fault.alertName, Number.isFinite(fault.alertCode) ? `код ${fault.alertCode}` : ""]
         .filter(Boolean).join(" · ") || "без описания";
       if (previous === undefined && (!ended || fault.alertStartTime * 1000 >= (snapshot.faultCheckedAt ?? now))) {
-        messages.push("⚠️ Ошибка инвертора — " + label + (fault.description ? "\n" + fault.description.slice(0, 300) : ""));
+        messages.push("🚨 Ошибка инвертора\n\n" + label + (fault.description ? "\n" + fault.description.slice(0, 300) : ""));
       }
-      if (previous === false && ended) messages.push("✅ Ошибка инвертора устранена — " + label);
+      if (previous === false && ended) messages.push("✅ Ошибка инвертора устранена\n\n" + label);
       seen.set(fault.alertId, ended);
     }
     snapshot.faults = Object.fromEntries(seen);
@@ -147,14 +142,54 @@ export async function updateMonitorNotifications(
   const limits = await db.prepare("SELECT low_volts, high_volts FROM grid_voltage_limits WHERE device_sn = ?1")
     .bind(serial).first<VoltageLimits>();
 
-  updateConnectivity(snapshot, sample.measuredAt, now, messages);
-  updateBattery(snapshot, sample, station, shutdown, runtime, messages);
-  updatePhases(snapshot, sample, limits ?? DEFAULT_VOLTAGE_LIMITS, messages);
+  const voltageLimits = limits ?? DEFAULT_VOLTAGE_LIMITS;
+  if (!snapshot.gridState) {
+    const previous = await db.prepare("SELECT state, changed_at, measured_at FROM grid_state WHERE device_sn = ?1")
+      .bind(serial).first<{ state: "present" | "absent"; changed_at: number; measured_at: number }>();
+    snapshot.gridState = previous?.state;
+    snapshot.gridChangedAt = previous?.changed_at;
+    snapshot.gridMeasuredAt = previous?.measured_at;
+  }
+  if (sample.measuredAt <= (snapshot.gridMeasuredAt ?? 0)) sample.state = undefined;
+  const previousPhase = snapshot.phaseConfirmed;
+  const transition = sample.state !== undefined && snapshot.gridState !== undefined && sample.state !== snapshot.gridState;
+  const phaseMessages: string[] = [];
+  const batteryMessages: string[] = [];
+  const connectivityMessages: string[] = [];
+  updateConnectivity(snapshot, sample.measuredAt, now, connectivityMessages);
+  updateBattery(snapshot, sample, station, shutdown, runtime, batteryMessages);
+  updatePhases(snapshot, sample, voltageLimits, phaseMessages);
+  if (transition) {
+    messages.push(formatGridAlert(sample.state!, sample.measuredAt, station, runtime, sample.volts,
+      voltageLimits, snapshot.gridChangedAt, Boolean(previousPhase && previousPhase !== "normal,normal,normal" && sample.volts.every(v => v !== undefined && v >= voltageLimits.low_volts && v <= voltageLimits.high_volts))));
+    // The transition already describes the phase problem; don't repeat it on the next sample.
+    if (sample.volts.every(v => v !== undefined)) {
+      snapshot.phaseConfirmed = sample.volts.map(v => v === 0 ? "missing" : v! < voltageLimits.low_volts
+        ? "low" : v! > voltageLimits.high_volts ? "high" : "normal").join(",");
+    }
+    if (batteryMessages.some(text => text.startsWith("🪫 Достигнут"))) messages.push(...batteryMessages);
+  } else {
+    messages.push(...batteryMessages, ...phaseMessages);
+  }
+  if (sample.state) {
+    if (sample.state !== snapshot.gridState) snapshot.gridChangedAt = sample.measuredAt;
+    snapshot.gridState = sample.state;
+    snapshot.gridMeasuredAt = sample.measuredAt;
+  }
+  for (const text of connectivityMessages) {
+    if (text.startsWith("✅") && transition) continue;
+    messages.push(text.startsWith("✅") ? text + "\n\nПитание — "
+      + (sample.state === "absent" ? "от аккумуляторов\n" + batteryDetails(station, runtime)
+        : sample.state === "present" ? "от городской сети\nЗаряд — " + (station?.batterySOC ?? "нет данных") + " %"
+        : "неизвестно") : text);
+  }
   if (now - (snapshot.faultCheckedAt ?? 0) >= 5 * 60_000) {
-    await updateFaults(client, snapshot, now, messages);
+    const faults: string[] = [];
+    await updateFaults(client, snapshot, now, faults);
+    messages.push(...faults.map(text => sample.state === "absent" ? text + "\n\n" + batteryDetails(station, runtime) : text));
   }
 
-  const message = messages.length ? [name, ...messages].filter(Boolean).join("\n\n").slice(0, 3900) : "";
+  const message = messages.join("\n\n").slice(0, 3900);
   // Negative sequence keys separate monitor events from the positive grid sample timestamps.
   await db.batch([
     db.prepare(`

@@ -22,12 +22,18 @@ export class TelegramClient {
     if (!commands.ok || !button.ok) throw new Error("Telegram rejected owner menu configuration");
   }
 
-  async sendStatusMessage(text: string, keyboard: boolean | typeof ownerMenu | { remove_keyboard: true } | { inline_keyboard: { text: string; callback_data: string }[][] } = true): Promise<void> {
+  async sendStatusMessage(text: string, keyboard: boolean | typeof ownerMenu | { remove_keyboard: true } | { inline_keyboard: { text: string; callback_data: string }[][] } = true, alertFormatting = false): Promise<void> {
     const result = await post<{ ok: boolean }>(
       `${TELEGRAM_API}/bot${this.token}/sendMessage`,
       {
         chat_id: this.chatId,
-        text,
+        text: alertFormatting ? text.split("\n").map(line => {
+          const safe = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          if (/^(🔋|🪫|🟢|⚠️|✅|📡|🚨)/u.test(line)) return `<b>${safe}</b>`;
+          return /^(Заряд|Примерное время работы|Потребление|На аккумуляторах|Нижний порог|Последнее обновление|Питание) — /.test(line)
+            ? safe.replace(" — ", " — <b>") + "</b>" : safe;
+        }).join("\n") : text,
+        ...(alertFormatting ? { parse_mode: "HTML" } : {}),
         link_preview_options: { is_disabled: true },
         ...(typeof keyboard === "object" ? { reply_markup: keyboard } : keyboard ? { reply_markup: {
           keyboard: [[{ text: STATUS_BUTTON }]],
