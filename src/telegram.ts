@@ -1,6 +1,6 @@
 import { getStatisticsReport, type StatisticsPeriod } from "./statistics";
 import { recordMembership, recordPrivateRequest, requestButtons, resolveRequest, type ChatMembership } from "./chat-requests";
-import { adminReply, changeSubscription } from "./telegram-admin";
+import { adminReply, changeSubscription, listAdminSubscriptions } from "./telegram-admin";
 import { legacyDevice, listDevices, loadConfig } from "./owner";
 import { STATUS_BUTTON, TELEGRAM_API } from "./constants";
 import { DeyeClient } from "./deye";
@@ -68,6 +68,10 @@ const ownerSections = {
     title: "Инверторы",
     actions: [["📋 Список станций", "/stations"], ["➕ Добавить инвертор", "/add"], ["↩️ Администрирование", "/manage"], ["↩️ Главное меню", "/admin"]],
   },
+  recipients: {
+    title: "Подписки · выбери список",
+    actions: [["✅ Активные подписки", "/recipientsactive"], ["🔕 Отключённые подписки", "/recipientsinactive"], ["↩️ Администрирование", "/manage"], ["↩️ Главное меню", "/admin"]],
+  },
   alerts: {
     title: "Оповещения",
     actions: [["📨 Заявки", "/requests"], ["👥 Все подписки", "/recipients"], ["↩️ Администрирование", "/manage"], ["↩️ Главное меню", "/admin"]],
@@ -98,7 +102,7 @@ const ownerMenu = ownerKeyboard(mainActions);
 interface TelegramUpdate {
   update_id: number;
   my_chat_member?: ChatMembership;
-  callback_query?: { id: string; from: { id: number }; message?: { chat: { id: number; type: string } }; data?: string };
+  callback_query?: { id: string; from: { id: number }; message?: { message_id?: number; chat: { id: number; type: string } }; data?: string };
   message?: { chat: { id: number; type: string }; from?: { id: number; is_bot?: boolean; first_name?: string; last_name?: string }; text?: string };
 }
 
@@ -134,7 +138,15 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
             const name = await changeSubscription(env, target, serial, enable);
             answer = "Подписка уже в нужном состоянии или недоступна.";
             if (name) {
-              answer = enable ? "Подписка восстановлена." : "Подписка отключена.";
+              answer = enable ? "Подписка включена." : "Подписка отключена.";
+              if (callback.message.message_id !== undefined) {
+                try {
+                  await post(`${TELEGRAM_API}/bot${env.TELEGRAM_BOT_TOKEN}/editMessageReplyMarkup`, {
+                    chat_id: ownerId, message_id: callback.message.message_id,
+                    reply_markup: { inline_keyboard: [] },
+                  });
+                } catch { console.warn("Subscription action button update failed"); }
+              }
               try {
                 await new TelegramClient(env.TELEGRAM_BOT_TOKEN, target)
                   .sendStatusMessage(enable ? `🔔 Оповещения по инвертору «${name}» снова включены.`
@@ -150,7 +162,7 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
             callback_query_id: callback.id, ...(answer ? { text: answer, show_alert: true } : {}),
           });
           if (action === "menu" && target &&
-              ["statstoday", "statsyesterday", "statsweek", "admin", "status", "manage", "devices", "alerts", "add", "requests", "stations", "recipients", "subscriptions", "bind", "unbind"].includes(target)) {
+              ["recipientsactive", "recipientsinactive", "statstoday", "statsyesterday", "statsweek", "admin", "status", "manage", "devices", "alerts", "add", "requests", "stations", "recipients", "subscriptions", "bind", "unbind"].includes(target)) {
             return handleMessage({
               chat: callback.message.chat,
               from: callback.from,
@@ -225,6 +237,39 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
         console.warn("Telegram owner menu configuration failed");
       }
       await client.sendStatusMessage("Выбери действие.", ownerMenu);
+      return new Response(null, { status: 204 });
+    }
+
+    if (owner && privateChat && command === "/recipients") {
+      await client.sendStatusMessage(ownerSections.recipients.title, ownerKeyboard(ownerSections.recipients.actions));
+      return new Response(null, { status: 204 });
+    }
+
+    if (owner && privateChat && ["/recipientsactive", "/recipientsinactive"].includes(command)) {
+      if (!env.GRID_DB) {
+        await client.sendStatusMessage("База данных недоступна.", false);
+        return new Response(null, { status: 204 });
+      }
+      const enabled = command === "/recipientsactive";
+      const subscriptions = await listAdminSubscriptions(env, ownerId, enabled);
+      const offset = /^\d+$/.test(args[0] ?? "") ? Number(args[0]) : 0;
+      const page = subscriptions.slice(offset, offset + 10);
+      if (!page.length) await client.sendStatusMessage(enabled ? "Активных подписок нет." : "Отключённых подписок нет.", false);
+      for (const subscription of page) {
+        const data = `${enabled ? "detach" : "restore"}:${subscription.chatId}:${subscription.serial}`;
+        const actionable = subscription.available && new TextEncoder().encode(data).length <= 64;
+        await client.sendStatusMessage([
+          subscription.recipient,
+          `Инвертор — ${subscription.deviceName}`,
+          `Серийный номер — ${subscription.serial}`,
+          ...(!subscription.available ? ["Бот удалён или заблокирован. Для включения его нужно добавить снова."] : []),
+        ].join("\n"), actionable ? { inline_keyboard: [[{ text: enabled ? "Отключить" : "Включить", callback_data: data }]] } : false);
+      }
+      if (subscriptions.length > offset + 10) {
+        await client.sendStatusMessage(`Показано ${offset + 1}–${offset + page.length} из ${subscriptions.length}.`, {
+          inline_keyboard: [[{ text: "Следующие 10 подписок", callback_data: `menu:${command.slice(1)}:${offset + 10}` }]],
+        });
+      }
       return new Response(null, { status: 204 });
     }
 

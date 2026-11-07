@@ -14,40 +14,13 @@ export async function adminReply(
     return "Открой одноразовую ссылку для подключения Deye (10 минут).\n" + await makeSetupLink(env, origin);
   }
 
-  if (command === "/stations" || command === "/recipients") {
+  if (command === "/stations") {
     if (chatId !== ownerId) return "Открой этот раздел в личном чате с ботом.";
     const devices = await listDevices(db);
     const legacy = legacyDevice(env);
     const entries = legacy && !devices.some(row => row.device_sn === legacy.device_sn) ? [legacy, ...devices] : devices;
-    if (command === "/stations") {
-      return entries.map(device => device.name + " · " + device.device_sn)
-        .join("\n").slice(0, 3900) || "Нажми «Добавить инвертор», чтобы подключить первый инвертор.";
-    }
-
-    const { results: subscriptions } = await db.prepare(`
-      SELECT s.device_sn, s.chat_id, s.enabled, r.title, r.state
-      FROM chat_subscriptions s LEFT JOIN chat_requests r ON r.chat_id = s.chat_id
-      ORDER BY COALESCE(r.title, s.chat_id)
-    `).all<{ device_sn: string; chat_id: string; enabled: number; title: string | null; state: string | null }>();
-    return entries.map(device => {
-      const rows = subscriptions.filter(row => row.device_sn === device.device_sn);
-      const chats = rows.map(row => ({
-        enabled: row.enabled === 1, available: row.state !== "removed",
-        id: row.chat_id, name: row.chat_id === ownerId ? "Вы (личный чат)" : row.title || "Чат " + row.chat_id,
-      }));
-      if (device.device_sn === env.DEYE_DEVICE_SN && env.TELEGRAM_CHAT_ID &&
-          !rows.some(row => row.chat_id === env.TELEGRAM_CHAT_ID)) {
-        chats.push({ enabled: true, available: true, id: env.TELEGRAM_CHAT_ID, name: env.TELEGRAM_CHAT_ID === ownerId ? "Вы (личный чат)" : "Чат " + env.TELEGRAM_CHAT_ID });
-      }
-      for (const chat of chats) {
-        const data = `${chat.enabled ? "detach" : "restore"}:${chat.id}:${device.device_sn}`;
-        if (chat.available && new TextEncoder().encode(data).length <= 64 && buttons.length < 30) {
-          buttons.push([{ text: `${chat.enabled ? "Отключить" : "Восстановить"} · ${chat.name} · ${device.name}`.slice(0, 64), callback_data: data }]);
-        }
-      }
-      return [device.name + " · " + device.device_sn, ...chats.map(chat => "• " + chat.name + (chat.enabled ? "" : " · отключена")),
-        ...(chats.length ? [] : ["Подписок нет"])].join("\n");
-    }).join("\n\n").slice(0, 3900) || "Нажми «Добавить инвертор», чтобы подключить первый инвертор.";
+    return entries.map(device => device.name + " · " + device.device_sn)
+      .join("\n").slice(0, 3900) || "Нажми «Добавить инвертор», чтобы подключить первый инвертор.";
   }
 
   if (!["/bind", "/unbind"].includes(command)) return undefined;
@@ -95,4 +68,29 @@ export async function changeSubscription(env: Env, chatId: string, serial: strin
     RETURNING chat_id
   `).bind(serial, chatId, legacy).first();
   return changed ? device?.name ?? "Текущая станция" : null;
+}
+
+export async function listAdminSubscriptions(env: Env, ownerId: string, enabled: boolean) {
+  const db = env.GRID_DB;
+  if (!db) return [];
+  const devices = await listDevices(db);
+  const legacy = legacyDevice(env);
+  const entries = legacy && !devices.some(row => row.device_sn === legacy.device_sn) ? [legacy, ...devices] : devices;
+  const { results: subscriptions } = await db.prepare(`
+    SELECT s.device_sn, s.chat_id, s.enabled, r.title, r.state
+    FROM chat_subscriptions s LEFT JOIN chat_requests r ON r.chat_id = s.chat_id
+    ORDER BY COALESCE(r.title, s.chat_id), s.device_sn
+  `).all<{ device_sn: string; chat_id: string; enabled: number; title: string | null; state: string | null }>();
+  if (legacy && env.TELEGRAM_CHAT_ID && !subscriptions.some(row => row.device_sn === legacy.device_sn && row.chat_id === env.TELEGRAM_CHAT_ID)) {
+    subscriptions.push({ device_sn: legacy.device_sn, chat_id: env.TELEGRAM_CHAT_ID, enabled: 1, title: null, state: null });
+  }
+  return subscriptions.filter(row => (row.enabled === 1) === enabled).flatMap(row => {
+    const device = entries.find(device => device.device_sn === row.device_sn);
+    if (!device) return [];
+    return [{
+      serial: row.device_sn, chatId: row.chat_id, deviceName: device.name,
+      recipient: row.chat_id === ownerId ? "Вы (личный чат)" : row.title || "Чат " + row.chat_id,
+      available: row.state !== "removed",
+    }];
+  });
 }
