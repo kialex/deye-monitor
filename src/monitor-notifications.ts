@@ -1,3 +1,4 @@
+import { updateGenerator, type GeneratorSnapshot } from "./generator";
 import { VOLTAGE_MAX_AGE_MS } from "./constants";
 import type { DeyeClient, Device, Station } from "./deye";
 import type { GridDatabase } from "./grid-monitor";
@@ -7,6 +8,7 @@ const OFFLINE_ALERT_MS = 30 * 60_000;
 const FAULT_LOOKBACK_MS = 24 * 60 * 60_000;
 
 interface Snapshot {
+  generator?: GeneratorSnapshot;
   gridState?: "present" | "absent";
   gridChangedAt?: number;
   gridMeasuredAt?: number;
@@ -142,6 +144,9 @@ export async function updateMonitorNotifications(
   const limits = await db.prepare("SELECT low_volts, high_volts FROM grid_voltage_limits WHERE device_sn = ?1")
     .bind(serial).first<VoltageLimits>();
 
+  snapshot.generator ??= {};
+  const generator = updateGenerator(snapshot.generator, device, station, now);
+  if (generator.message) messages.push(generator.message);
   const voltageLimits = limits ?? DEFAULT_VOLTAGE_LIMITS;
   if (!snapshot.gridState) {
     const previous = await db.prepare("SELECT state, changed_at, measured_at FROM grid_state WHERE device_sn = ?1")
@@ -157,10 +162,11 @@ export async function updateMonitorNotifications(
   const batteryMessages: string[] = [];
   const connectivityMessages: string[] = [];
   updateConnectivity(snapshot, sample.measuredAt, now, connectivityMessages);
-  updateBattery(snapshot, sample, station, shutdown, runtime, batteryMessages);
+  if (generator.running === true) delete snapshot.batteryBand;
+  else updateBattery(snapshot, sample, station, shutdown, runtime, batteryMessages);
   updatePhases(snapshot, sample, voltageLimits, phaseMessages);
   if (transition) {
-    messages.push(formatGridAlert(sample.state!, sample.measuredAt, station, runtime, sample.volts,
+    if (!(sample.state === "absent" && generator.running === true)) messages.push(formatGridAlert(sample.state!, sample.measuredAt, station, runtime, sample.volts,
       voltageLimits, snapshot.gridChangedAt, Boolean(previousPhase && previousPhase !== "normal,normal,normal" && sample.volts.every(v => v !== undefined && v >= voltageLimits.low_volts && v <= voltageLimits.high_volts))));
     // The transition already describes the phase problem; don't repeat it on the next sample.
     if (sample.volts.every(v => v !== undefined)) {
@@ -179,14 +185,15 @@ export async function updateMonitorNotifications(
   for (const text of connectivityMessages) {
     if (text.startsWith("✅") && transition) continue;
     messages.push(text.startsWith("✅") ? text + "\n\nПитание — "
-      + (sample.state === "absent" ? "от аккумуляторов\n" + batteryDetails(station, runtime)
+      + (sample.state === "absent" && generator.running === true ? "от генератора"
+        : sample.state === "absent" ? "от аккумуляторов\n" + batteryDetails(station, runtime)
         : sample.state === "present" ? "от городской сети\nЗаряд — " + (station?.batterySOC ?? "нет данных") + " %"
         : "неизвестно") : text);
   }
   if (now - (snapshot.faultCheckedAt ?? 0) >= 5 * 60_000) {
     const faults: string[] = [];
     await updateFaults(client, snapshot, now, faults);
-    messages.push(...faults.map(text => sample.state === "absent" ? text + "\n\n" + batteryDetails(station, runtime) : text));
+    messages.push(...faults.map(text => sample.state === "absent" && generator.running !== true ? text + "\n\n" + batteryDetails(station, runtime) : text));
   }
 
   const message = messages.join("\n\n").slice(0, 3900);
