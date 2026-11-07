@@ -52,11 +52,23 @@ export function estimateBatteryRuntime(
       Math.abs(stationTime - measuredAt) > MAX_SAMPLE_SKEW_MS) return undefined;
 
   const voltage = Number(device?.dataList?.find(point => point.key === "BatteryVoltage" && point.unit === "V")?.value);
-  const { batterySOC, dischargePower } = station;
+  // Use power from the same inverter sample as the relay and battery voltage.
+  // Station aggregates can still describe the moment before the grid disconnected.
+  const dischargePower = Number(device?.dataList?.find(point => point.key === "BatteryPower" && point.unit === "W")?.value);
+  const { batterySOC, consumptionPower, generationPower } = station;
   if (!Number.isFinite(voltage) || voltage <= 0 ||
       typeof batterySOC !== "number" || !Number.isFinite(batterySOC) ||
       batterySOC <= settings.shutdown_soc || batterySOC > 100 ||
-      typeof dischargePower !== "number" || !Number.isFinite(dischargePower) || dischargePower <= 0) return undefined;
+      typeof dischargePower !== "number" || !Number.isFinite(dischargePower) || dischargePower < 50 || (device?.collectionTime ?? NaN) * 1000 !== measuredAt ||
+      Date.now() - measuredAt < 0 || Date.now() - measuredAt > MAX_SAMPLE_SKEW_MS) return undefined;
+
+  // During switching, mismatched telemetry can imply days of autonomy at a large load.
+  // Wait for consistent readings rather than publish a misleading estimate.
+  if (typeof consumptionPower === "number" && Number.isFinite(consumptionPower) &&
+      typeof generationPower === "number" && Number.isFinite(generationPower)) {
+    const netDemand = Math.max(0, consumptionPower - generationPower);
+    if (netDemand > 100 && dischargePower < netDemand * 0.7) return undefined;
+  }
 
   const availableWh = settings.capacity_ah * voltage * (batterySOC - settings.shutdown_soc) / 100;
   const minutes = Math.round(availableWh / dischargePower * 60 / 5) * 5;
