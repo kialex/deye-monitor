@@ -1,3 +1,5 @@
+import { voltageAdvice, DEFAULT_VOLTAGE_LIMITS, formatVoltagePhases, phaseLevels, voltageHeading, type VoltageLimits } from "./phase-voltage";
+export { DEFAULT_VOLTAGE_LIMITS, type VoltageLimits } from "./phase-voltage";
 import { GRID_PHASE_KEYS, DISPLAY_TIME_ZONE, GRID_PRESENT_MIN_VOLTS, VOLTAGE_MAX_AGE_MS } from "./constants";
 import type { Device, Station } from "./deye";
 
@@ -68,8 +70,6 @@ export function readGridTransition(device?: Device) {
   };
 }
 
-export interface VoltageLimits { low_volts: number; high_volts: number }
-export const DEFAULT_VOLTAGE_LIMITS: VoltageLimits = { low_volts: 195.5, high_volts: 264.5 };
 
 export function batteryDetails(station?: Station, runtime?: string): string {
   return [
@@ -83,7 +83,7 @@ export function gridProblem(volts: (number | undefined)[], limits: VoltageLimits
   if (volts.every(v => v === 0)) return "пропало напряжение в городской сети";
   const problems = volts.flatMap((v, i) => v === undefined ? [] : v === 0
     ? [`нет напряжения на L${i + 1}`] : v < limits.low_volts
-    ? [`низкое напряжение на L${i + 1}`] : v > limits.high_volts
+    ? [`низкое напряжение на L${i + 1}`] : v > Math.min(limits.high_volts, DEFAULT_VOLTAGE_LIMITS.high_volts)
     ? [`высокое напряжение на L${i + 1}`] : []);
   return problems.join("; ");
 }
@@ -91,7 +91,7 @@ export function gridProblem(volts: (number | undefined)[], limits: VoltageLimits
 export function formatGridAlert(
   state: "present" | "absent", measuredAt: number, station?: Station, batteryRuntime?: string,
   volts: (number | undefined)[] = [], limits: VoltageLimits = DEFAULT_VOLTAGE_LIMITS,
-  changedAt?: number, phasesRestored = false,
+  changedAt?: number, phasesRestored = false, previousPhases?: string,
 ): string {
   if (state === "present") {
     const minutes = changedAt === undefined ? undefined : Math.max(0, Math.floor((measuredAt - changedAt) / 60_000));
@@ -101,11 +101,16 @@ export function formatGridAlert(
       "", duration ? `На аккумуляторах — ${duration}` : "", `Заряд — ${format(station?.batterySOC, "%")}`]
       .filter((line, i) => line || i === 2).join("\n");
   }
-  const reason = volts.length ? gridProblem(volts, limits) : "";
+  const levels = phaseLevels(volts, limits);
+  const allMissing = volts.length > 0 && volts.every(v => v === 0);
+  const problem = volts.length ? gridProblem(volts, limits) : "";
+  const reason = allMissing ? "пропало напряжение в городской сети"
+    : problem ? voltageHeading(levels, limits).replace(/^\S+ /u, "").replace(/^./u, c => c.toLowerCase()) : "";
   return ["🔋 Перешли на аккумуляторы", reason ? `Причина — ${reason}.`
     : "Инвертор отключился от городской сети. Причина не определена.",
-    reason && !volts.every(v => v === 0) ? formatPhaseVoltages(volts) : "", "", batteryDetails(station, batteryRuntime)]
-    .filter((line, i) => line || i === 3).join("\n");
+    reason && !allMissing ? formatVoltagePhases(volts, limits, previousPhases) : "", "", batteryDetails(station, batteryRuntime),
+    ...(voltageAdvice(levels) ? ["", voltageAdvice(levels)] : [])]
+    .filter((line, i) => line || i === 3 || i === 5).join("\n");
 }
 
 export function formatStatus(station?: Station, device?: Device): string {

@@ -1,8 +1,9 @@
+import { formatPhaseAlert, phaseLevels } from "./phase-voltage";
 import { updateGenerator, type GeneratorSnapshot } from "./generator";
 import { VOLTAGE_MAX_AGE_MS } from "./constants";
 import type { DeyeClient, Device, Station } from "./deye";
 import type { GridDatabase } from "./grid-monitor";
-import { batteryDetails, DEFAULT_VOLTAGE_LIMITS, formatGridAlert, formatPhaseVoltages, gridProblem, parseStationTime, readGridTransition, type VoltageLimits } from "./status";
+import { batteryDetails, DEFAULT_VOLTAGE_LIMITS, formatGridAlert, parseStationTime, readGridTransition, type VoltageLimits } from "./status";
 
 const OFFLINE_ALERT_MS = 30 * 60_000;
 const FAULT_LOOKBACK_MS = 24 * 60 * 60_000;
@@ -79,12 +80,7 @@ function updatePhases(
     if (volts.every(value => value === 0)) delete snapshot.phaseConfirmed;
     return;
   }
-  const phases = volts.map(value => {
-    if (value === 0) return "missing";
-    if (value !== undefined && value < limits.low_volts) return "low";
-    if (value !== undefined && value > limits.high_volts) return "high";
-    return "normal";
-  });
+  const phases = phaseLevels(volts, limits);
   const signature = phases.join(",");
   if (snapshot.phaseCandidate !== signature ||
       sample.measuredAt - (previousSample ?? 0) > VOLTAGE_MAX_AGE_MS) {
@@ -93,12 +89,8 @@ function updatePhases(
   }
   const normal = phases.every(phase => phase === "normal");
   if (snapshot.phaseConfirmed === signature) return;
-  if (normal) {
-    if (snapshot.phaseConfirmed) messages.push("✅ Напряжение на фазах восстановилось\n\n" + formatPhaseVoltages(volts));
-  } else {
-    const reason = gridProblem(volts, limits);
-    messages.push("⚠️ " + reason.charAt(0).toUpperCase() + reason.slice(1) + "\n\n" + formatPhaseVoltages(volts)
-      + `\nДопустимый диапазон — ${Math.round(limits.low_volts)}–${Math.round(limits.high_volts)} В`);
+  if (!normal || snapshot.phaseConfirmed) {
+    messages.push(formatPhaseAlert(volts, limits, snapshot.phaseConfirmed));
   }
   snapshot.phaseConfirmed = signature;
 }
@@ -167,11 +159,10 @@ export async function updateMonitorNotifications(
   updatePhases(snapshot, sample, voltageLimits, phaseMessages);
   if (transition) {
     if (!(sample.state === "absent" && generator.running === true)) messages.push(formatGridAlert(sample.state!, sample.measuredAt, station, runtime, sample.volts,
-      voltageLimits, snapshot.gridChangedAt, Boolean(previousPhase && previousPhase !== "normal,normal,normal" && sample.volts.every(v => v !== undefined && v >= voltageLimits.low_volts && v <= voltageLimits.high_volts))));
+      voltageLimits, snapshot.gridChangedAt, Boolean(previousPhase && previousPhase !== "normal,normal,normal" && sample.volts.every(v => v !== undefined && v >= voltageLimits.low_volts && v <= Math.min(voltageLimits.high_volts, DEFAULT_VOLTAGE_LIMITS.high_volts))), previousPhase));
     // The transition already describes the phase problem; don't repeat it on the next sample.
     if (sample.volts.every(v => v !== undefined)) {
-      snapshot.phaseConfirmed = sample.volts.map(v => v === 0 ? "missing" : v! < voltageLimits.low_volts
-        ? "low" : v! > voltageLimits.high_volts ? "high" : "normal").join(",");
+      snapshot.phaseConfirmed = phaseLevels(sample.volts, voltageLimits).join(",");
     }
     if (batteryMessages.some(text => text.startsWith("🪫 Достигнут"))) messages.push(...batteryMessages);
   } else {
