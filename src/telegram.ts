@@ -1,3 +1,4 @@
+import { changeNotificationSetting, openNotificationSettings } from "./telegram-notification-settings";
 import { getStatisticsReport, type StatisticsPeriod } from "./statistics";
 import { recordMembership, recordPrivateRequest, requestButtons, resolveRequest, type ChatMembership } from "./chat-requests";
 import { adminReply, changeSubscription, listAdminSubscriptions } from "./telegram-admin";
@@ -74,7 +75,7 @@ const ownerSections = {
   },
   alerts: {
     title: "Оповещения",
-    actions: [["📨 Заявки", "/requests"], ["👥 Все подписки", "/recipients"], ["↩️ Администрирование", "/manage"], ["↩️ Главное меню", "/admin"]],
+    actions: [["⚙️ Настройки уведомлений", "/notificationsettings"], ["📨 Заявки", "/requests"], ["👥 Все подписки", "/recipients"], ["↩️ Администрирование", "/manage"], ["↩️ Главное меню", "/admin"]],
   },
 };
 
@@ -131,6 +132,21 @@ export async function handleTelegramWebhook(request: Request, env: Env): Promise
         const callback = update.callback_query;
         if (String(callback.from.id) === ownerId && String(callback.message?.chat.id) === ownerId &&
             callback.message?.chat.type === "private") {
+          if (/^(ns|nt|na):/.test(callback.data ?? "")) {
+            try {
+              const view = await changeNotificationSetting(env, callback.data!);
+              await post(`${TELEGRAM_API}/bot${env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`, { callback_query_id: callback.id });
+              if (callback.message.message_id !== undefined) {
+                const result = await post<{ ok: boolean; description?: string }>(`${TELEGRAM_API}/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+                  chat_id: ownerId, message_id: callback.message.message_id, text: view.text, reply_markup: view.keyboard,
+                });
+                if (!result.ok && !result.description?.includes("message is not modified")) throw new Error("Settings message update failed");
+              } else await client.sendStatusMessage(view.text, view.keyboard);
+            } catch {
+              await client.sendStatusMessage("Не удалось обновить настройки уведомлений. Открой раздел ещё раз.", false);
+            }
+            return new Response(null, { status: 204 });
+          }
           const [action, target, serial] = (callback.data ?? "").split(":");
           let answer: string | undefined;
           if ((action === "detach" || action === "restore") && target && serial) {
@@ -237,6 +253,16 @@ async function handleMessage(message: TelegramUpdate["message"], request: Reques
         console.warn("Telegram owner menu configuration failed");
       }
       await client.sendStatusMessage("Выбери действие.", ownerMenu);
+      return new Response(null, { status: 204 });
+    }
+
+    if (owner && privateChat && command === "/notificationsettings") {
+      try {
+        const view = await openNotificationSettings(env);
+        await client.sendStatusMessage(view.text, view.keyboard.inline_keyboard.length ? view.keyboard : false);
+      } catch {
+        await client.sendStatusMessage("Не удалось открыть настройки уведомлений. Попробуй позже.", false);
+      }
       return new Response(null, { status: 204 });
     }
 

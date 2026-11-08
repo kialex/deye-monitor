@@ -1,4 +1,5 @@
-import { formatPhaseAlert, phaseLevels } from "./phase-voltage";
+import { loadNotificationSettings, notificationEnabled, type NotificationSettings, type NotificationKind } from "./notification-settings";
+import { formatPhaseAlert, phaseLevels, phaseNotificationKinds } from "./phase-voltage";
 import { updateGenerator, type GeneratorSnapshot } from "./generator";
 import { VOLTAGE_MAX_AGE_MS } from "./constants";
 import type { DeyeClient, Device, Station } from "./deye";
@@ -24,7 +25,7 @@ interface Snapshot {
   faults?: Record<string, boolean>;
 }
 
-function updateConnectivity(snapshot: Snapshot, measuredAt: number, now: number, messages: string[]) {
+function updateConnectivity(snapshot: Snapshot, measuredAt: number, now: number, messages: string[], settings: NotificationSettings) {
   snapshot.checkedAt ??= now;
   if (measuredAt > 0 && measuredAt <= now) {
     snapshot.latestSample = Math.max(snapshot.latestSample ?? 0, measuredAt);
@@ -33,16 +34,16 @@ function updateConnectivity(snapshot: Snapshot, measuredAt: number, now: number,
   const offline = now - last >= OFFLINE_ALERT_MS;
   if (offline && !snapshot.offline) {
     const minutes = Math.floor((now - last) / 60_000);
-    messages.push(`📡 Нет свежих данных от инвертора\n\nПоследнее обновление — ${snapshot.latestSample ? minutes + " минут назад" : "неизвестно"}\nПитание дома и заряд сейчас неизвестны.`);
+    if (notificationEnabled(settings, "offline")) messages.push(`📡 Нет свежих данных от инвертора\n\nПоследнее обновление — ${snapshot.latestSample ? minutes + " минут назад" : "неизвестно"}\nПитание дома и заряд сейчас неизвестны.`);
   } else if (!offline && snapshot.offline) {
-    messages.push("✅ Связь с инвертором восстановлена");
+    if (notificationEnabled(settings, "online")) messages.push("✅ Связь с инвертором восстановлена");
   }
   snapshot.offline = offline;
 }
 
 function updateBattery(
   snapshot: Snapshot, sample: ReturnType<typeof readGridTransition>, station: Station | undefined,
-  shutdown: number | undefined, runtime: string | undefined, messages: string[],
+  shutdown: number | undefined, runtime: string | undefined, messages: string[], settings: NotificationSettings,
 ) {
   if (sample.state === "present") {
     delete snapshot.batteryBand;
@@ -61,23 +62,25 @@ function updateBattery(
 
   const percent = charge.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
   if (atShutdown) {
-    messages.push(`🪫 Достигнут нижний порог заряда\n\nЗаряд — ${percent} %\nНижний порог — ${shutdown} %`);
+    if (notificationEnabled(settings, "shutdown")) messages.push(`🪫 Достигнут нижний порог заряда\n\nЗаряд — ${percent} %\nНижний порог — ${shutdown} %`);
     return;
   }
+  const crossed = [20, 30, 50, 80].find(threshold => charge <= threshold && threshold < (previous ?? 101)
+    && notificationEnabled(settings, `battery${threshold}` as NotificationKind));
+  if (crossed === undefined) return;
   const icon = charge < 50 ? "🪫" : "🔋";
   messages.push(`${icon} Осталось ${percent} % заряда\n\n${batteryDetails(station, runtime).split("\n").slice(1).join("\n")}`);
 }
 
 function updatePhases(
-  snapshot: Snapshot, sample: ReturnType<typeof readGridTransition>, limits: VoltageLimits, messages: string[],
+  snapshot: Snapshot, sample: ReturnType<typeof readGridTransition>, limits: VoltageLimits, messages: string[], settings: NotificationSettings,
 ) {
   if (!sample.fresh || sample.measuredAt <= (snapshot.phaseSample ?? 0)) return;
   const previousSample = snapshot.phaseSample;
   snapshot.phaseSample = sample.measuredAt;
   const volts = sample.volts;
-  if (volts.every(value => value === 0) || volts.some(value => value === undefined)) {
+  if (volts.some(value => value === undefined)) {
     delete snapshot.phaseCandidate;
-    if (volts.every(value => value === 0)) delete snapshot.phaseConfirmed;
     return;
   }
   const phases = phaseLevels(volts, limits);
@@ -89,13 +92,14 @@ function updatePhases(
   }
   const normal = phases.every(phase => phase === "normal");
   if (snapshot.phaseConfirmed === signature) return;
-  if (!normal || snapshot.phaseConfirmed) {
+  if ((!normal || snapshot.phaseConfirmed) && phaseNotificationKinds(volts, limits, snapshot.phaseConfirmed)
+      .some(kind => notificationEnabled(settings, kind))) {
     messages.push(formatPhaseAlert(volts, limits, snapshot.phaseConfirmed));
   }
   snapshot.phaseConfirmed = signature;
 }
 
-async function updateFaults(client: DeyeClient, snapshot: Snapshot, now: number, messages: string[]) {
+async function updateFaults(client: DeyeClient, snapshot: Snapshot, now: number, messages: string[], settings: NotificationSettings) {
   try {
     const start = Math.min(now - FAULT_LOOKBACK_MS, snapshot.faultCheckedAt ?? now);
     const faults = await client.getFaults(Math.floor(start / 1000), Math.floor(now / 1000));
@@ -107,9 +111,9 @@ async function updateFaults(client: DeyeClient, snapshot: Snapshot, now: number,
       const label = [fault.alertName, Number.isFinite(fault.alertCode) ? `код ${fault.alertCode}` : ""]
         .filter(Boolean).join(" · ") || "без описания";
       if (previous === undefined && (!ended || fault.alertStartTime * 1000 >= (snapshot.faultCheckedAt ?? now))) {
-        messages.push("🚨 Ошибка инвертора\n\n" + label + (fault.description ? "\n" + fault.description.slice(0, 300) : ""));
+        if (notificationEnabled(settings, "fault_on")) messages.push("🚨 Ошибка инвертора\n\n" + label + (fault.description ? "\n" + fault.description.slice(0, 300) : ""));
       }
-      if (previous === false && ended) messages.push("✅ Ошибка инвертора устранена\n\n" + label);
+      if (previous === false && ended && notificationEnabled(settings, "fault_off")) messages.push("✅ Ошибка инвертора устранена\n\n" + label);
       seen.set(fault.alertId, ended);
     }
     snapshot.faults = Object.fromEntries(seen);
@@ -129,6 +133,7 @@ export async function updateMonitorNotifications(
     .bind(serial).first<{ revision: number; snapshot: string }>();
   if (!row) return;
 
+  const settings = await loadNotificationSettings(db, serial);
   const snapshot = JSON.parse(row.snapshot) as Snapshot;
   const messages: string[] = [];
   const now = Date.now();
@@ -138,7 +143,7 @@ export async function updateMonitorNotifications(
 
   snapshot.generator ??= {};
   const generator = updateGenerator(snapshot.generator, device, station, now);
-  if (generator.message) messages.push(generator.message);
+  if (generator.message && notificationEnabled(settings, generator.running ? "gen_on" : "gen_off")) messages.push(generator.message);
   const voltageLimits = limits ?? DEFAULT_VOLTAGE_LIMITS;
   if (!snapshot.gridState) {
     const previous = await db.prepare("SELECT state, changed_at, measured_at FROM grid_state WHERE device_sn = ?1")
@@ -153,11 +158,13 @@ export async function updateMonitorNotifications(
   const phaseMessages: string[] = [];
   const batteryMessages: string[] = [];
   const connectivityMessages: string[] = [];
-  updateConnectivity(snapshot, sample.measuredAt, now, connectivityMessages);
+  updateConnectivity(snapshot, sample.measuredAt, now, connectivityMessages, settings);
   if (generator.running === true) delete snapshot.batteryBand;
-  else updateBattery(snapshot, sample, station, shutdown, runtime, batteryMessages);
-  updatePhases(snapshot, sample, voltageLimits, phaseMessages);
-  if (transition) {
+  else updateBattery(snapshot, sample, station, shutdown, runtime, batteryMessages, settings);
+  updatePhases(snapshot, sample, voltageLimits, phaseMessages, settings);
+  const gridNotification = transition && notificationEnabled(settings, sample.state === "absent" ? "grid_off" : "grid_on")
+    && !(sample.state === "absent" && generator.running === true);
+  if (gridNotification) {
     if (!(sample.state === "absent" && generator.running === true)) messages.push(formatGridAlert(sample.state!, sample.measuredAt, station, runtime, sample.volts,
       voltageLimits, snapshot.gridChangedAt, Boolean(previousPhase && previousPhase !== "normal,normal,normal" && sample.volts.every(v => v !== undefined && v >= voltageLimits.low_volts && v <= Math.min(voltageLimits.high_volts, DEFAULT_VOLTAGE_LIMITS.high_volts))), previousPhase));
     // The transition already describes the phase problem; don't repeat it on the next sample.
@@ -174,7 +181,7 @@ export async function updateMonitorNotifications(
     snapshot.gridMeasuredAt = sample.measuredAt;
   }
   for (const text of connectivityMessages) {
-    if (text.startsWith("✅") && transition) continue;
+    if (text.startsWith("✅") && gridNotification) continue;
     messages.push(text.startsWith("✅") ? text + "\n\nПитание — "
       + (sample.state === "absent" && generator.running === true ? "от генератора"
         : sample.state === "absent" ? "от аккумуляторов\n" + batteryDetails(station, runtime)
@@ -183,7 +190,7 @@ export async function updateMonitorNotifications(
   }
   if (now - (snapshot.faultCheckedAt ?? 0) >= 5 * 60_000) {
     const faults: string[] = [];
-    await updateFaults(client, snapshot, now, faults);
+    await updateFaults(client, snapshot, now, faults, settings);
     messages.push(...faults.map(text => sample.state === "absent" && generator.running !== true ? text + "\n\n" + batteryDetails(station, runtime) : text));
   }
 

@@ -1,3 +1,4 @@
+import type { NotificationKind } from "./notification-settings";
 export interface VoltageLimits { low_volts: number; high_volts: number }
 export const DEFAULT_VOLTAGE_LIMITS: VoltageLimits = { low_volts: 195.5, high_volts: 253 };
 
@@ -84,4 +85,26 @@ export function formatPhaseAlert(
   }
   return [heading, "", formatVoltagePhases(volts, limits, previousSignature),
     ...(voltageAdvice(levels) ? ["", voltageAdvice(levels)] : [])].join("\n");
+}
+
+// Classify changed phases rather than the worst phase that was already abnormal.
+export function phaseNotificationKinds(
+  volts: (number | undefined)[], limits: VoltageLimits, previousSignature?: string,
+): NotificationKind[] {
+  const levels = phaseLevels(volts, limits);
+  const previous = previousSignature?.split(",") as PhaseLevel[] | undefined;
+  if (levels.every(level => level === "normal")) return previous ? ["phase_restored"] : [];
+  const kinds: NotificationKind[] = [];
+  const destinations: Partial<Record<PhaseLevel, NotificationKind>> = {
+    low: "low", "very-low": "very_low", critical: "critical_low", high: "high",
+    "very-high": "very_high", "critical-high": "critical_high", missing: "phase_missing",
+  };
+  for (let i = 0; i < levels.length; i++) {
+    const level = levels[i];
+    const before = previous?.[i];
+    if (level === before || level === "unknown") continue;
+    if (before && SEVERITY[level] < SEVERITY[before]) kinds.push("phase_improved");
+    else if (destinations[level]) kinds.push(destinations[level]!);
+  }
+  return [...new Set(kinds)];
 }
