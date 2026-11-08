@@ -34,20 +34,10 @@ function number(value: number): string {
   return value.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
 }
 
-export function formatVoltagePhases(
-  volts: (number | undefined)[], limits: VoltageLimits, previousSignature?: string,
-): string {
-  const previous = previousSignature?.split(",") as PhaseLevel[] | undefined;
-  const levels = phaseLevels(volts, limits);
-  return volts.map((value, i) => {
-    const before = previous?.[i];
-    const changed = before !== undefined && before !== "unknown" && levels[i] !== "unknown" && before !== levels[i];
-    const improving = before !== undefined && SEVERITY[levels[i]] < SEVERITY[before];
-    const direction = isHigh(levels[i]) ? (improving ? "↓" : "↑")
-      : before !== undefined && isHigh(before) ? "↓" : improving ? "↑" : "↓";
-    const arrow = changed ? ` ${improving ? "🟢" : "🔴"}${direction}` : "";
-    return `L${i + 1} — ${value === undefined ? "нет данных" : number(value) + " В"}${arrow}`;
-  }).join(" · ");
+export function formatVoltagePhases(volts: (number | undefined)[]): string {
+  return volts.map((value, i) =>
+    `L${i + 1} — ${value === undefined ? "нет данных" : number(value) + " В"}`,
+  ).join(" · ");
 }
 
 export function voltageHeading(levels: PhaseLevel[], limits: VoltageLimits): string {
@@ -83,7 +73,7 @@ export function formatPhaseAlert(
     heading = heading.replace(/(Низкое|Очень низкое|Критически низкое) напряжение/, "Напряжение повышается")
       .replace(/(Высокое|Очень высокое|Критически высокое) напряжение/, "Напряжение снижается");
   }
-  return [heading, "", formatVoltagePhases(volts, limits, previousSignature),
+  return [heading, "", formatVoltagePhases(volts),
     ...(voltageAdvice(levels) ? ["", voltageAdvice(levels)] : [])].join("\n");
 }
 

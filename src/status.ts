@@ -91,7 +91,7 @@ export function gridProblem(volts: (number | undefined)[], limits: VoltageLimits
 export function formatGridAlert(
   state: "present" | "absent", measuredAt: number, station?: Station, batteryRuntime?: string,
   volts: (number | undefined)[] = [], limits: VoltageLimits = DEFAULT_VOLTAGE_LIMITS,
-  changedAt?: number, phasesRestored = false, previousPhases?: string,
+  changedAt?: number, phasesRestored = false,
 ): string {
   if (state === "present") {
     const minutes = changedAt === undefined ? undefined : Math.max(0, Math.floor((measuredAt - changedAt) / 60_000));
@@ -108,7 +108,7 @@ export function formatGridAlert(
     : problem ? voltageHeading(levels, limits).replace(/^\S+ /u, "").replace(/^./u, c => c.toLowerCase()) : "";
   return ["🔋 Перешли на аккумуляторы", reason ? `Причина — ${reason}.`
     : "Инвертор отключился от городской сети. Причина не определена.",
-    reason && !allMissing ? formatVoltagePhases(volts, limits, previousPhases) : "", "", batteryDetails(station, batteryRuntime),
+    reason && !allMissing ? formatVoltagePhases(volts) : "", "", batteryDetails(station, batteryRuntime),
     ...(voltageAdvice(levels) ? ["", voltageAdvice(levels)] : [])]
     .filter((line, i) => line || i === 3 || i === 5).join("\n");
 }

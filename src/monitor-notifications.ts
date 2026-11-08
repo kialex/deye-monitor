@@ -166,7 +166,7 @@ export async function updateMonitorNotifications(
     && !(sample.state === "absent" && generator.running === true);
   if (gridNotification) {
     if (!(sample.state === "absent" && generator.running === true)) messages.push(formatGridAlert(sample.state!, sample.measuredAt, station, runtime, sample.volts,
-      voltageLimits, snapshot.gridChangedAt, Boolean(previousPhase && previousPhase !== "normal,normal,normal" && sample.volts.every(v => v !== undefined && v >= voltageLimits.low_volts && v <= Math.min(voltageLimits.high_volts, DEFAULT_VOLTAGE_LIMITS.high_volts))), previousPhase));
+      voltageLimits, snapshot.gridChangedAt, Boolean(previousPhase && previousPhase !== "normal,normal,normal" && sample.volts.every(v => v !== undefined && v >= voltageLimits.low_volts && v <= Math.min(voltageLimits.high_volts, DEFAULT_VOLTAGE_LIMITS.high_volts)))));
     // The transition already describes the phase problem; don't repeat it on the next sample.
     if (sample.volts.every(v => v !== undefined)) {
       snapshot.phaseConfirmed = phaseLevels(sample.volts, voltageLimits).join(",");
