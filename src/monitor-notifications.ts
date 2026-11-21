@@ -4,12 +4,13 @@ import { updateGenerator, type GeneratorSnapshot } from "./generator";
 import { VOLTAGE_MAX_AGE_MS } from "./constants";
 import type { DeyeClient, Device, Station } from "./deye";
 import type { GridDatabase } from "./grid-monitor";
-import { batteryDetails, DEFAULT_VOLTAGE_LIMITS, formatGridAlert, parseStationTime, readGridTransition, type VoltageLimits } from "./status";
+import { batteryDetails, DEFAULT_VOLTAGE_LIMITS, formatGridAlert, parseStationTime, readGridTransition, type VoltageLimits, type GridObservation } from "./status";
 
 const OFFLINE_ALERT_MS = 30 * 60_000;
 const FAULT_LOOKBACK_MS = 24 * 60 * 60_000;
 
 interface Snapshot {
+  lastGridObservation?: GridObservation;
   generator?: GeneratorSnapshot;
   gridState?: "present" | "absent";
   gridChangedAt?: number;
@@ -165,8 +166,12 @@ export async function updateMonitorNotifications(
   const gridNotification = transition && notificationEnabled(settings, sample.state === "absent" ? "grid_off" : "grid_on")
     && !(sample.state === "absent" && generator.running === true);
   if (gridNotification) {
-    if (!(sample.state === "absent" && generator.running === true)) messages.push(formatGridAlert(sample.state!, sample.measuredAt, station, runtime, sample.volts,
-      voltageLimits, snapshot.gridChangedAt, Boolean(previousPhase && previousPhase !== "normal,normal,normal" && sample.volts.every(v => v !== undefined && v >= voltageLimits.low_volts && v <= Math.min(voltageLimits.high_volts, DEFAULT_VOLTAGE_LIMITS.high_volts)))));
+    const phasesRestored = Boolean(previousPhase && previousPhase !== "normal,normal,normal"
+      && sample.volts.every(v => v !== undefined && v >= voltageLimits.low_volts
+        && v <= Math.min(voltageLimits.high_volts, DEFAULT_VOLTAGE_LIMITS.high_volts)));
+    messages.push(formatGridAlert(sample.state!, sample.measuredAt, station, runtime, sample.volts,
+      voltageLimits, snapshot.gridChangedAt, phasesRestored,
+      { previous: snapshot.lastGridObservation, frequency: sample.frequency }));
     // The transition already describes the phase problem; don't repeat it on the next sample.
     if (sample.volts.every(v => v !== undefined)) {
       snapshot.phaseConfirmed = phaseLevels(sample.volts, voltageLimits).join(",");
@@ -194,14 +199,17 @@ export async function updateMonitorNotifications(
     messages.push(...faults.map(text => sample.state === "absent" && generator.running !== true ? text + "\n\n" + batteryDetails(station, runtime) : text));
   }
 
+  if (sample.fresh && sample.measuredAt > (snapshot.lastGridObservation?.measuredAt ?? 0)) {
+    snapshot.lastGridObservation = { volts: sample.volts, measuredAt: sample.measuredAt, frequency: sample.frequency };
+  }
   const message = messages.join("\n\n").slice(0, 3900);
   // Negative sequence keys separate monitor events from the positive grid sample timestamps.
   await db.batch([
     db.prepare(`
-      INSERT INTO grid_alerts (device_sn, measured_at, message)
-      SELECT device_sn, -revision - 1, ?3 FROM monitor_notifications
+      INSERT INTO grid_alerts (device_sn, measured_at, message, created_at)
+      SELECT device_sn, -revision - 1, ?3, ?4 FROM monitor_notifications
       WHERE device_sn = ?1 AND revision = ?2 AND ?3 <> ''
-    `).bind(serial, row.revision, message),
+    `).bind(serial, row.revision, message, now),
     db.prepare(`
       UPDATE monitor_notifications SET revision = revision + 1, snapshot = ?3
       WHERE device_sn = ?1 AND revision = ?2

@@ -39,7 +39,11 @@ export function readGridSample(device?: Device) {
     // Unknown relay states must not be interpreted as a confirmed grid reconnection.
     state = undefined;
   }
-  return { volts, measuredAt, fresh, state };
+  const frequencyPoint = device?.dataList?.find(point => normalizeTelemetryKey(point.key) === "gridfrequency" && point.unit === "Hz");
+  const frequencyValue = frequencyPoint?.value;
+  const frequency = frequencyValue !== undefined && String(frequencyValue).trim() !== "" && Number.isFinite(Number(frequencyValue))
+    ? Number(frequencyValue) : undefined;
+  return { volts, measuredAt, fresh, state, frequency };
 
 }
 
@@ -80,7 +84,7 @@ export function batteryDetails(station?: Station, runtime?: string): string {
 }
 
 export function gridProblem(volts: (number | undefined)[], limits: VoltageLimits): string {
-  if (volts.every(v => v === 0)) return "пропало напряжение в городской сети";
+  if (volts.length === 3 && volts.every(v => v === 0)) return "пропало напряжение в городской сети";
   const problems = volts.flatMap((v, i) => v === undefined ? [] : v === 0
     ? [`нет напряжения на L${i + 1}`] : v < limits.low_volts
     ? [`низкое напряжение на L${i + 1}`] : v > Math.min(limits.high_volts, DEFAULT_VOLTAGE_LIMITS.high_volts)
@@ -88,10 +92,16 @@ export function gridProblem(volts: (number | undefined)[], limits: VoltageLimits
   return problems.join("; ");
 }
 
+export interface GridObservation {
+  volts: (number | undefined)[];
+  measuredAt: number;
+  frequency?: number;
+}
+
 export function formatGridAlert(
   state: "present" | "absent", measuredAt: number, station?: Station, batteryRuntime?: string,
   volts: (number | undefined)[] = [], limits: VoltageLimits = DEFAULT_VOLTAGE_LIMITS,
-  changedAt?: number, phasesRestored = false,
+  changedAt?: number, phasesRestored = false, observation?: { previous?: GridObservation; frequency?: number },
 ): string {
   if (state === "present") {
     const minutes = changedAt === undefined ? undefined : Math.max(0, Math.floor((measuredAt - changedAt) / 60_000));
@@ -102,15 +112,35 @@ export function formatGridAlert(
       .filter((line, i) => line || i === 2).join("\n");
   }
   const levels = phaseLevels(volts, limits);
-  const allMissing = volts.length > 0 && volts.every(v => v === 0);
+  const allMissing = volts.length === 3 && volts.every(v => v === 0);
   const problem = volts.length ? gridProblem(volts, limits) : "";
   const reason = allMissing ? "пропало напряжение в городской сети"
     : problem ? voltageHeading(levels, limits).replace(/^\S+ /u, "").replace(/^./u, c => c.toLowerCase()) : "";
-  return ["🔋 Перешли на аккумуляторы", reason ? `Причина — ${reason}.`
-    : "Инвертор отключился от городской сети. Причина не определена.",
-    reason && !allMissing ? formatVoltagePhases(volts) : "", "", batteryDetails(station, batteryRuntime),
-    ...(voltageAdvice(levels) ? ["", voltageAdvice(levels)] : [])]
-    .filter((line, i) => line || i === 3 || i === 5).join("\n");
+  const details: string[] = [];
+  let advice = voltageAdvice(levels);
+  if (reason) details.push(`Причина — ${reason}.`);
+  else {
+    details.push("Инвертор отключил подключение к городской сети.");
+    const previous = observation?.previous && {
+      ...observation.previous,
+      volts: observation.previous.volts.map(value => typeof value === "number" && Number.isFinite(value) ? value : undefined),
+    };
+    const recent = previous && measuredAt > previous.measuredAt && measuredAt - previous.measuredAt <= 120_000;
+    const previousProblem = recent ? gridProblem(previous.volts, limits) : "";
+    if (recent && previousProblem) {
+      details.push(`Перед отключением, ${formatTime(previous.measuredAt)}: ${previousProblem}.`,
+        formatVoltagePhases(previous.volts));
+      advice = voltageAdvice(phaseLevels(previous.volts, limits));
+    } else {
+      details.push("Точную причину Deye не сообщил; кратковременный скачок мог не попасть в замер.");
+    }
+  }
+  if (!allMissing) {
+    details.push((!reason ? "Последний замер: " : "") + formatVoltagePhases(volts.length ? volts : [undefined, undefined, undefined]));
+    if (observation?.frequency !== undefined) details.push(`Частота сети — ${format(observation.frequency, "Гц")}`);
+  }
+  return ["🔋 Перешли на аккумуляторы", ...details, "", batteryDetails(station, batteryRuntime),
+    ...(advice ? ["", advice] : [])].join("\n");
 }
 
 export function formatStatus(station?: Station, device?: Device): string {

@@ -6,7 +6,7 @@ import { legacyDevice, listDevices, loadConfig } from "./owner";
 import { STATUS_BUTTON, TELEGRAM_API } from "./constants";
 import { DeyeClient } from "./deye";
 import { readDeyeConfig, type Env } from "./env";
-import { post } from "./http";
+import { HttpError, post } from "./http";
 import { formatStatus } from "./status";
 
 export class TelegramClient {
@@ -25,13 +25,13 @@ export class TelegramClient {
   }
 
   async sendStatusMessage(text: string, keyboard: boolean | typeof ownerMenu | { remove_keyboard: true } | { inline_keyboard: { text: string; callback_data: string }[][] } = true, alertFormatting = false): Promise<void> {
-    const result = await post<{ ok: boolean }>(
+    const result = await post<{ ok: boolean; error_code?: number; parameters?: { retry_after?: number } }>(
       `${TELEGRAM_API}/bot${this.token}/sendMessage`,
       {
         chat_id: this.chatId,
         text: alertFormatting ? text.split("\n").map(line => {
           const safe = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-          if (/^(🔋|🪫|🟢|⚠️|✅|📡|🚨|⚡|⏹|🔴|🟠|📊|🏠|🔌|☀️)/u.test(line)) return `<b>${safe}</b>`;
+          if (/^(🔋|🪫|🟢|⚠️|✅|📡|🚨|⚡|⏹|🔴|🟠|📬|📊|🏠|🔌|☀️)/u.test(line)) return `<b>${safe}</b>`;
           if (/^L1 — /.test(line)) return safe.replace(/(L[123] — )([\d\s.,]+ В)/g, "$1<b>$2</b>");
           return /^(Заряд|Заряд батареи|Мощность|Проработал|Примерное время работы|Потребление|На аккумуляторах|Нижний порог|Последнее обновление|Питание) — /.test(line)
             ? safe.replace(" — ", " — <b>") + "</b>" : safe;
@@ -45,7 +45,7 @@ export class TelegramClient {
         } } : {}),
       },
     );
-    if (!result.ok) throw new Error("Telegram rejected the message");
+    if (!result.ok) throw new HttpError(result.error_code ?? 502, result.parameters?.retry_after);
   }
 }
 
